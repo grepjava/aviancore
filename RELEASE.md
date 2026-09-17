@@ -7,6 +7,13 @@ is renamed to the version and its date.
 Before tagging, run `swift test` and `bash scripts/cache-unit-test.sh` here, and
 the unit and end-to-end suites of Garuda and Peregrine against the new version.
 
+## 0.2.0 — 2026-09-17
+
+- `av_dec_*` and `ContentDecoder` decode response bodies: gzip (several
+  members too), deflate as zlib or raw, and brotli and zstd when their
+  libraries load. The decoded size is held to a limit as it grows, and
+  `ContentDecoder.acceptEncoding` names the codings this process can decode.
+
 ## 0.1.1 — 2026-09-17
 
 - `WebSocketCodec.isSendableCloseCode` refuses 1004, which RFC 6455 reserves,

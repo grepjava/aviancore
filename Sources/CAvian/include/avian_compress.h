@@ -47,6 +47,34 @@ void av_enc_free(void *enc);
 int av_enc_run(void *enc, const uint8_t *in, size_t n, int mode,
                uint8_t *out, size_t cap, size_t *consumed, size_t *produced);
 
+/* ---------------------------------------------------------------------------
+ * Response body decompression, for a client reading what a server sent.
+ *
+ * The same codecs the other way, plus "deflate", which RFC 9110 says is the
+ * zlib format and which some servers send as raw deflate anyway: the first
+ * two bytes decide. A gzip body of several members is read as one.
+ * ------------------------------------------------------------------------- */
+
+#define AV_DEC_DEFLATE  4
+
+/* 1 when the codec can be decoded in this process. */
+int av_dec_available(int codec);
+
+/* A new stream, or NULL when the codec is unavailable or out of memory. */
+void *av_dec_new(int codec);
+void av_dec_free(void *dec);
+
+/* Takes up to `n` bytes of `in` and writes up to `cap` bytes to `out`.
+ *
+ * Returns 0 when all of the input has been taken and more is expected, 1 when
+ * it must be called again with fresh output space (and the input not yet
+ * consumed), 2 when the encoded stream has ended, and -1 when the input is not
+ * valid for the codec. Input left over after the end is not consumed.
+ *
+ * `*consumed` and `*produced` say how far it got either way. */
+int av_dec_run(void *dec, const uint8_t *in, size_t n,
+               uint8_t *out, size_t cap, size_t *consumed, size_t *produced);
+
 #ifdef __cplusplus
 }
 #endif
