@@ -4,8 +4,18 @@ A change someone building on aviancore would notice gets a line under
 Unreleased in the commit that makes it. When a version is tagged, that section
 is renamed to the version and its date.
 
-Before tagging, run `swift test` and `bash scripts/cache-unit-test.sh` here, and
+Before tagging, run `swift test`, `bash scripts/cache-unit-test.sh` and
+`bash scripts/bus-unit-test.sh` here, and
 the unit and end-to-end suites of Garuda and Peregrine against the new version.
+
+## 0.3.0 — 2026-09-17
+
+- `av_bus_*`, the broadcast ring: messages published by any process that maps
+  it before the fork, read back by number by every other, with no lock held
+  across processes. Numbers start at the time the ring was mapped, a message
+  stays readable until newer ones write over it, a writer that died holding the
+  ring is taken over, and each process has a wake descriptor that a publisher
+  writes to only when that process has armed it.
 
 ## 0.2.0 — 2026-09-17
 
