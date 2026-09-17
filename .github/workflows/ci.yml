@@ -1,0 +1,90 @@
+# Swift build and tests on Linux and macOS. Started by hand.
+
+name: CI
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SWIFT_VERSION: "6.1.2"
+  SWIFT_PLATFORM: ubuntu24.04
+  SWIFT_SLUG: ubuntu2404
+
+jobs:
+  linux:
+    name: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils gcc libc6-dev libcurl4 libedit2 libncurses6 \
+            libsqlite3-0 libssl-dev libxml2 pkg-config tzdata zlib1g-dev
+
+      - name: Cache the Swift toolchain
+        id: swift-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/swift
+          key: swift-${{ env.SWIFT_VERSION }}-${{ env.SWIFT_PLATFORM }}
+
+      - name: Swift toolchain
+        if: steps.swift-cache.outputs.cache-hit != 'true'
+        run: |
+          dir="swift-${SWIFT_VERSION}-RELEASE-${SWIFT_PLATFORM}"
+          url="https://download.swift.org/swift-${SWIFT_VERSION}-release/${SWIFT_SLUG}"
+          url="${url}/swift-${SWIFT_VERSION}-RELEASE/${dir}.tar.gz"
+          curl -fsSL "$url" -o /tmp/swift.tar.gz
+          tar -xzf /tmp/swift.tar.gz -C /tmp
+          sudo cp -r "/tmp/${dir}/usr" /opt/swift
+
+      - name: Environment
+        run: echo "/opt/swift/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Unit tests
+        run: swift test
+
+      - name: The shared response cache under concurrent writers
+        run: bash scripts/cache-unit-test.sh
+
+  macos:
+    name: macos
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Newest installed Xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$newest" ]; then sudo xcode-select -s "$newest"; fi
+          swift --version
+
+      - name: Homebrew packages
+        run: brew install pkg-config openssl@3
+
+      - name: Environment
+        run: |
+          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          swift build -c release \
+            -Xcc -I"$OPENSSL_PREFIX/include" \
+            -Xlinker -L"$OPENSSL_PREFIX/lib"
+
+      - name: Unit tests
+        run: |
+          swift test \
+            -Xcc -I"$OPENSSL_PREFIX/include" \
+            -Xlinker -L"$OPENSSL_PREFIX/lib"
