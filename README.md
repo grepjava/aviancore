@@ -86,6 +86,10 @@ swift test                          # 287 unit tests
 bash scripts/cache-unit-test.sh     # 7, the shared response cache under concurrent writers
 ```
 
+`scripts/gen-hpack-tables.py` and `scripts/gen-qpack-table.py` generate the
+HPACK and QPACK static tables from independent implementations; their output is
+committed.
+
 The end-to-end suites exercise these layers through a running server, so they
 live in the servers' repositories.
 
