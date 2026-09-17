@@ -219,11 +219,12 @@ public enum WebSocketCodec {
                    payload: UnsafePointer(payload.readPointer), length: n + 2)
     }
 
-    /// Whether a close code may appear on the wire. 1005 and 1006 are
-    /// reserved for local reporting and must never be sent.
+    /// Whether a close code may appear on the wire. 1004 is reserved, and
+    /// 1005, 1006 and 1015 are for local reporting only (RFC 6455 section
+    /// 7.4.1).
     @inlinable
     public static func isSendableCloseCode(_ code: UInt16) -> Bool {
-        if code == 1005 || code == 1006 || code == 1015 { return false }
+        if code == 1004 || code == 1005 || code == 1006 || code == 1015 { return false }
         if code >= 1000 && code <= 1014 { return true }
         return code >= 3000 && code <= 4999
     }

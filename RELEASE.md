@@ -7,6 +7,14 @@ is renamed to the version and its date.
 Before tagging, run `swift test` and `bash scripts/cache-unit-test.sh` here, and
 the unit and end-to-end suites of Garuda and Peregrine against the new version.
 
+## 0.1.1 — 2026-09-17
+
+- `WebSocketCodec.isSendableCloseCode` refuses 1004, which RFC 6455 reserves,
+  so a close frame carrying it is a protocol error. Autobahn's case 7.9.3
+  failed on it.
+- `scripts/gen-hpack-tables.py` generates `HPACKTables.swift` here, beside the
+  QPACK generator.
+
 ## 0.1.0 — 2026-09-17
 
 The first release. These layers were in Garuda and Peregrine, and each repository
