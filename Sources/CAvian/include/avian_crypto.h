@@ -159,6 +159,23 @@ long av_certkey_sign(av_certkey *ck, uint16_t scheme,
                      const void *msg, size_t msg_len,
                      unsigned char *out, size_t out_len);
 
+/* Whether this certificate is one to serve for `host`: its subject alternative
+ * names, or its common name when it has none. `host` is the name out of a
+ * client's SNI extension and need not be NUL-terminated; anything longer than
+ * a DNS name can be, or with a NUL inside it, matches nothing.
+ *
+ * This is how a QUIC handshake chooses among several certificates. TCP has
+ * OpenSSL's own SNI callback doing the choosing, and both match names with
+ * av_host_matches, so the two cannot drift apart. */
+int av_certkey_matches(av_certkey *ck, const char *host, size_t host_len);
+
+/* RFC 6125 host matching, case-insensitive, where a wildcard covers exactly
+ * one label: `*.example.com` is a.example.com, and neither a.b.example.com nor
+ * example.com itself. Both `pattern` and `host` are NUL-terminated.
+ *
+ * Public because the two certificate paths have to agree about it. */
+int av_host_matches(const char *pattern, const char *host);
+
 #ifdef __cplusplus
 }
 #endif

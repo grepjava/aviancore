@@ -22,8 +22,16 @@ import CAvian
 import AvianCore
 
 public struct QUICServerConfig {
-    /// The certificate and key, owned by the caller for the life of the server.
-    public var certKey: OpaquePointer
+    /// The certificates and keys, owned by the caller for the life of the
+    /// server, and never empty. The first is the default: what a client that
+    /// sends no SNI, or asks for a name none of them claims, is served. The
+    /// rest are chosen by the name in the client's SNI extension.
+    public var certKeys: [OpaquePointer]
+    /// The default certificate, which is the first of them.
+    public var certKey: OpaquePointer {
+        get { certKeys[0] }
+        set { certKeys[0] = newValue }
+    }
     /// ALPN protocols, in the server's order of preference.
     public var alpn: [[UInt8]]
     public var maxIdleTimeoutMs: UInt64 = 30_000
@@ -36,7 +44,14 @@ public struct QUICServerConfig {
     public var maxIncomingStreams = 256
 
     public init(certKey: OpaquePointer, alpn: [[UInt8]]) {
-        self.certKey = certKey
+        self.certKeys = [certKey]
+        self.alpn = alpn
+    }
+
+    /// With several certificates, the first being the default.
+    public init(certKeys: [OpaquePointer], alpn: [[UInt8]]) {
+        precondition(!certKeys.isEmpty, "a QUIC server needs a certificate")
+        self.certKeys = certKeys
         self.alpn = alpn
     }
 }
@@ -225,7 +240,7 @@ public final class QUICConnection {
         // limit: a peer that sends megabytes of handshake is not one we want.
         for i in 0..<3 { cryptoReceive[i].limit = 256 * 1024 }
 
-        tls = TLSServerHandshake(certKey: config.certKey, alpn: config.alpn,
+        tls = TLSServerHandshake(certKeys: config.certKeys, alpn: config.alpn,
                                  parameters: parameters, version: version)
     }
 

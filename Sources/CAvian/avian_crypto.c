@@ -20,6 +20,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <strings.h>
+
+int av_host_matches(const char *pattern, const char *host) {
+    if (!pattern || !host || !*pattern || !*host) return 0;
+    if (pattern[0] == '*' && pattern[1] == '.') {
+        /* A wildcard with nothing after it claims nothing: with no suffix to
+         * match against, it would cover every one-label name ending in a
+         * dot. No certificate carries such a name, and the rule should still
+         * say what it means. */
+        if (!pattern[2]) return 0;
+        const char *dot = strchr(host, '.');
+        if (!dot) return 0;
+        return strcasecmp(dot + 1, pattern + 2) == 0;
+    }
+    return strcasecmp(pattern, host) == 0;
+}
+
 #if defined(__has_include)
 #  if !__has_include(<openssl/evp.h>)
 #    define AV_NO_OPENSSL 1
@@ -91,6 +108,9 @@ long av_certkey_sign(av_certkey *ck, uint16_t s, const void *m, size_t ml,
                      unsigned char *o, size_t ol) {
     (void)ck; (void)s; (void)m; (void)ml; (void)o; (void)ol; return -1;
 }
+int av_certkey_matches(av_certkey *ck, const char *h, size_t hl) {
+    (void)ck; (void)h; (void)hl; return 0;
+}
 
 #else
 
@@ -99,6 +119,7 @@ long av_certkey_sign(av_certkey *ck, uint16_t s, const void *m, size_t ml,
 #include <openssl/rand.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <openssl/err.h>
 #include <openssl/rsa.h>
 #include <openssl/ec.h>
@@ -616,6 +637,48 @@ void av_certkey_free(av_certkey *ck) {
     for (int i = 0; i < ck->count; i++) X509_free(ck->chain[i]);
     if (ck->key) EVP_PKEY_free(ck->key);
     free(ck);
+}
+
+int av_certkey_matches(av_certkey *ck, const char *host, size_t host_len) {
+    if (!ck || ck->count == 0 || !host || host_len == 0) return 0;
+    /* A DNS name is at most 253 bytes. Copying is what lets a caller pass the
+     * bytes straight out of a client's SNI extension. */
+    char name[256];
+    if (host_len >= sizeof name) return 0;
+    memcpy(name, host, host_len);
+    name[host_len] = 0;
+    if (memchr(name, 0, host_len)) return 0;
+
+    X509 *cert = ck->chain[0];
+    int matched = 0;
+    int dns_names = 0;
+    GENERAL_NAMES *sans = X509_get_ext_d2i(cert, NID_subject_alt_name, NULL, NULL);
+    if (sans) {
+        int n = sk_GENERAL_NAME_num(sans);
+        for (int i = 0; i < n && !matched; i++) {
+            const GENERAL_NAME *entry = sk_GENERAL_NAME_value(sans, i);
+            if (!entry || entry->type != GEN_DNS) continue;
+            dns_names++;
+            const unsigned char *bytes = ASN1_STRING_get0_data(entry->d.dNSName);
+            int length = ASN1_STRING_length(entry->d.dNSName);
+            if (length <= 0 || (size_t)length >= sizeof name) continue;
+            char pattern[256];
+            memcpy(pattern, bytes, (size_t)length);
+            pattern[length] = 0;
+            if (memchr(pattern, 0, (size_t)length)) continue;
+            matched = av_host_matches(pattern, name);
+        }
+        GENERAL_NAMES_free(sans);
+    }
+    /* A certificate that carries subject alternative names is described by
+     * them alone: its common name adds nothing and is not looked at. */
+    if (dns_names > 0) return matched;
+
+    char common[256];
+    int length = X509_NAME_get_text_by_NID(X509_get_subject_name(cert),
+                                           NID_commonName, common, sizeof common);
+    if (length <= 0) return 0;
+    return av_host_matches(common, name);
 }
 
 int av_certkey_chain_count(av_certkey *ck) { return ck ? ck->count : 0; }

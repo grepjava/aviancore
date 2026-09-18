@@ -15,6 +15,7 @@
 #define _GNU_SOURCE 1
 
 #include "avian_tls.h"
+#include "avian_crypto.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -287,18 +288,6 @@ static void collect_names(struct av_tls_host *host) {
     }
 }
 
-/* RFC 6125 name matching: case-insensitive, and a wildcard covers exactly one
- * label. `*.example.com` is a.example.com but not a.b.example.com, and not
- * example.com itself. */
-static int host_matches(const char *pattern, const char *host) {
-    if (pattern[0] == '*' && pattern[1] == '.') {
-        const char *dot = strchr(host, '.');
-        if (!dot) return 0;
-        return strcasecmp(dot + 1, pattern + 2) == 0;
-    }
-    return strcasecmp(pattern, host) == 0;
-}
-
 /* Picks the certificate for the name the client asked for. */
 static int sni_select(SSL *ssl, int *unused_alert, void *arg) {
     (void)unused_alert;
@@ -310,7 +299,7 @@ static int sni_select(SSL *ssl, int *unused_alert, void *arg) {
 
     for (int i = 0; i < wrapper->host_count; i++) {
         for (int j = 0; j < wrapper->hosts[i].name_count; j++) {
-            if (!host_matches(wrapper->hosts[i].names[j], asked)) continue;
+            if (!av_host_matches(wrapper->hosts[i].names[j], asked)) continue;
             SSL_set_SSL_CTX(ssl, wrapper->hosts[i].ctx);
             return SSL_TLSEXT_ERR_OK;
         }

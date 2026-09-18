@@ -8,6 +8,24 @@ Before tagging, run `swift test`, `bash scripts/cache-unit-test.sh` and
 `bash scripts/bus-unit-test.sh` here, and
 the unit and end-to-end suites of Garuda and Peregrine against the new version.
 
+## 0.4.0 — 2026-09-18
+
+- `QUICServerConfig` takes several certificates and keys, and a QUIC
+  handshake serves the one whose names cover the name in the client's SNI
+  extension, or the first when none does. HTTP/3 served the default
+  certificate whatever a client asked for: the handshake here is written from
+  the primitives rather than driven by OpenSSL, so it had no selection of its
+  own, where TCP had OpenSSL's callback doing it.
+- `av_certkey_matches` says whether a certificate is one to serve for a name,
+  by its subject alternative names or, when it carries none, its common name.
+  The name is passed as bytes and a length, so it can come straight out of a
+  ClientHello.
+- `av_host_matches` is the RFC 6125 name rule, and both certificate paths now
+  call it rather than the TCP path keeping its own copy: a wildcard covers
+  exactly one label, matching is case-insensitive, and `*.example.com` is
+  neither `a.b.example.com` nor `example.com`. A pattern of `*.` alone now
+  matches nothing, where it used to match any one-label name ending in a dot.
+
 ## 0.3.0 — 2026-09-17
 
 - `av_bus_*`, the broadcast ring: messages published by any process that maps

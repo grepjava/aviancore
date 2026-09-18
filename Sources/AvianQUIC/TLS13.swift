@@ -106,7 +106,11 @@ public final class TLSServerHandshake {
     }
 
     // Configuration.
-    private let certKey: OpaquePointer          // av_certkey, owned by the caller
+    /// av_certkey, owned by the caller. The first is the default.
+    private let certKeys: [OpaquePointer]
+    /// The one this connection serves, chosen from the client's SNI once its
+    /// ClientHello has been read, and the default until then.
+    private var certKey: OpaquePointer
     private let alpnPreference: [[UInt8]]
     private var localParameters: QUICTransportParameters
     private let quicVersion: UInt32
@@ -135,9 +139,16 @@ public final class TLSServerHandshake {
     private var serverHandshakeSecret: [UInt8] = []
     private var incoming = [ByteBuffer](repeating: ByteBuffer(), count: 3)
 
-    public init(certKey: OpaquePointer, alpn: [[UInt8]],
+    public convenience init(certKey: OpaquePointer, alpn: [[UInt8]],
                 parameters: QUICTransportParameters, version: UInt32) {
-        self.certKey = certKey
+        self.init(certKeys: [certKey], alpn: alpn, parameters: parameters, version: version)
+    }
+
+    public init(certKeys: [OpaquePointer], alpn: [[UInt8]],
+                parameters: QUICTransportParameters, version: UInt32) {
+        precondition(!certKeys.isEmpty, "a TLS server needs a certificate")
+        self.certKeys = certKeys
+        self.certKey = certKeys[0]
         self.alpnPreference = alpn
         self.localParameters = parameters
         self.quicVersion = version
@@ -335,6 +346,10 @@ public final class TLSServerHandshake {
         if !transportParametersSeen { return fail(TLSAlert.missingExtension) }
         sawTransportParameters = true
 
+        // Before anything asks the key what it can sign: which certificate is
+        // served depends on the name this client asked for.
+        certKey = TLSServerHandshake.choose(certKeys, for: serverName)
+
         guard let chosenSuite = chooseCipherSuite(suites, Int(suitesLength)) else {
             return fail(TLSAlert.handshakeFailure)
         }
@@ -371,6 +386,29 @@ public final class TLSServerHandshake {
         if !writeServerFlight(scheme: scheme) { return }
         if !deriveApplicationSecrets() { return fail(TLSAlert.internalError) }
         state = .waitingFinished
+    }
+
+    /// The certificate for the name a client asked for, or the first, which is
+    /// the default.
+    ///
+    /// A client that sends no SNI, or asks for a name no certificate claims,
+    /// is served the default and decides for itself whether to go on -- the
+    /// same as the TCP path, which is OpenSSL's SNI callback over the same
+    /// matching rule, and the same as every other server: refusing the
+    /// handshake outright would turn a name that is merely not configured
+    /// into a connection failure with nothing to read.
+    static func choose(_ keys: [OpaquePointer], for name: [UInt8]) -> OpaquePointer {
+        guard keys.count > 1, !name.isEmpty else { return keys[0] }
+        for key in keys {
+            let matched = name.withUnsafeBufferPointer { bytes -> Int32 in
+                guard let base = bytes.baseAddress else { return 0 }
+                return base.withMemoryRebound(to: CChar.self, capacity: bytes.count) {
+                    av_certkey_matches(key, $0, bytes.count)
+                }
+            }
+            if matched != 0 { return key }
+        }
+        return keys[0]
     }
 
     private func chooseCipherSuite(_ suites: UnsafePointer<UInt8>, _ length: Int) -> QUICCipher? {
