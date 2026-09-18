@@ -12,6 +12,7 @@ import AvianCore
 private final class Trail: @unchecked Sendable {
     var steps: [Int] = []
     var threads: [UnsafeMutableRawPointer?] = []
+    var parked: UnsafeContinuation<Int, Never>? = nil
 }
 
 @Suite struct LoopExecutorTests {
@@ -99,10 +100,9 @@ private final class Trail: @unchecked Sendable {
         defer { owner.deallocate() }
         let executor = LoopExecutor(owner: owner)
         let trail = Trail()
-        nonisolated(unsafe) var parked: UnsafeContinuation<Int, Never>? = nil
         asOwner(owner) {
             Task(executorPreference: executor) {
-                let value = await withUnsafeContinuation { parked = $0 }
+                let value = await withUnsafeContinuation { trail.parked = $0 }
                 trail.steps.append(value)
                 trail.threads.append(av_worker_current())
             }
@@ -113,7 +113,7 @@ private final class Trail: @unchecked Sendable {
         #expect(!executor.hasWork)
         // Resumed from a thread that is not the loop's: the job is handed
         // over rather than run here.
-        parked?.resume(returning: 7)
+        trail.parked?.resume(returning: 7)
         #expect(executor.hasWork)
         #expect(trail.steps.isEmpty)
         asOwner(owner) {
