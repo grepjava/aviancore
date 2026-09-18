@@ -13,6 +13,30 @@ import Darwin
 import Testing
 import CAvian
 
+/// The process ID of a process that has certainly finished, for the test that
+/// a claim held by a dead writer is taken over.
+///
+/// Spawned rather than forked: Swift marks `fork()` unavailable on Darwin, and
+/// the whole of this file failed to compile there because of this one line --
+/// which is to say no test in it had ever run on macOS. Nothing here needs a
+/// copy of this process, only a process ID nothing is using, and picking a
+/// number instead would be picking one some live process may hold.
+private func pidThatHasExited() -> pid_t? {
+    for path in ["/usr/bin/true", "/bin/true"] {
+        var child: pid_t = 0
+        let spawned = path.withCString { executable -> Int32 in
+            var argv: [UnsafeMutablePointer<CChar>?] = [strdup(executable), nil]
+            defer { free(argv[0]) }
+            return posix_spawn(&child, executable, nil, nil, &argv, nil)
+        }
+        guard spawned == 0 else { continue }
+        var status: Int32 = 0
+        while waitpid(child, &status, 0) < 0 && errno == EINTR {}
+        return child
+    }
+    return nil
+}
+
 private let ringReady: Bool = {
     av_bus_init(1 << 16, 2) == 0 && av_bus_attach(0) >= 0
 }()
@@ -146,10 +170,7 @@ struct BroadcastBusTests {
 
     @Test func aWriterThatDiedIsTakenOver() throws {
         try #require(ringReady)
-        let child = fork()
-        if child == 0 { _exit(0) }
-        var status: Int32 = 0
-        _ = waitpid(child, &status, 0)
+        let child = try #require(pidThatHasExited())
 
         let before = av_bus_next()
         av_bus_test_abandon(child)

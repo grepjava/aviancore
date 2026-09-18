@@ -10,6 +10,14 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## Unreleased
+
+- The broadcast ring's tests compile on macOS. One line used `fork()`, which
+  Swift marks unavailable on Darwin, and it failed the whole file: no test in
+  it had ever run there. It only ever wanted the ID of a process that has
+  finished, which `posix_spawn` gives portably. CI, which now runs without
+  being asked, is what found it.
+
 ## 0.4.0 — 2026-09-18
 
 - `QUICServerConfig` takes several certificates and keys, and a QUIC
