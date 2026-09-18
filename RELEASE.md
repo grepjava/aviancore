@@ -4,9 +4,11 @@ A change someone building on aviancore would notice gets a line under
 Unreleased in the commit that makes it. When a version is tagged, that section
 is renamed to the version and its date.
 
-Before tagging, run `swift test`, `bash scripts/cache-unit-test.sh` and
-`bash scripts/bus-unit-test.sh` here, and
-the unit and end-to-end suites of Garuda and Peregrine against the new version.
+`.github/workflows/ci.yml` runs `swift test` on Linux and macOS and both C
+unit suites on every push to `main`, every pull request, and nightly. Before
+tagging, run the unit and end-to-end suites of Garuda and Peregrine against
+the new version as well: what they exercise here is only what this package
+tests of itself.
 
 ## 0.4.0 — 2026-09-18
 

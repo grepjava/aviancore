@@ -1,8 +1,19 @@
-# Swift build and tests on Linux and macOS. Started by hand.
+# Swift build and tests on Linux and macOS.
+#
+# The toolchain is pinned to the version Package.swift declares, not the newest
+# one: this package is a floor for the packages built on it, and a floor that is
+# never built at is not a floor.
 
 name: CI
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly, so a change in a dependency or a runner image is found here
+    # rather than in whatever is being released that day.
+    - cron: "41 3 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -56,6 +67,9 @@ jobs:
 
       - name: The shared response cache under concurrent writers
         run: bash scripts/cache-unit-test.sh
+
+      - name: The broadcast ring across processes
+        run: bash scripts/bus-unit-test.sh
 
   macos:
     name: macos
