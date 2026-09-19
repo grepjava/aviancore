@@ -112,9 +112,10 @@ int av_ktls_close_notify(int fd);
  * kernel. Shaped like av_tls_write. Only when av_tls_ktls_send says 1. */
 long av_tls_sendfile(av_tls *tls, int fd, long offset, long n);
 
-/* Decrypted bytes OpenSSL is holding that the socket no longer has. A
- * level-triggered poller will not mention these, so anything that reads has to
- * keep asking until this is zero. */
+/* Bytes OpenSSL is holding that the socket no longer has: how many are
+ * decrypted and ready, or 1 when all it holds is read ahead and not yet
+ * decrypted. A level-triggered poller will not mention these, so anything that
+ * reads has to keep asking until this is zero. */
 int av_tls_pending(av_tls *tls);
 
 /* An idle pooled connection had something to say. 1 when it was only

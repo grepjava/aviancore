@@ -6,6 +6,14 @@
  * EAGAIN. The wrappers below translate SSL_ERROR_WANT_* into errno so the
  * connection loop needs no TLS-specific error handling.
  *
+ * Reads go ahead (SSL_CTX_set_read_ahead): OpenSSL reads whatever the socket
+ * has, up to a whole record and more, in one call, where without it every
+ * record costs two -- its 5-byte header, then the rest. What it reads beyond
+ * the record it returns stays in its buffer, which av_tls_pending counts: the
+ * socket will not say it is readable for bytes it no longer has. Not under
+ * --ktls, where records OpenSSL has already read when the handshake ends
+ * would keep the kernel from taking over the receiving side.
+ *
  * Partial writes are enabled deliberately. Without SSL_MODE_ENABLE_PARTIAL_WRITE
  * a write that cannot be completed must be retried with the identical buffer,
  * which a ring of connection buffers cannot promise; with it, and with
@@ -324,6 +332,9 @@ static int configure_common(SSL_CTX *ctx, struct av_tls_ctx *wrapper,
     /* --ktls: kernel TLS, wherever the kernel and the negotiated cipher allow
      * it. OpenSSL falls back to encrypting in-process on its own when not. */
     if (g_ktls) SSL_CTX_set_options(ctx, SSL_OP_ENABLE_KTLS);
+    if (!g_ktls) SSL_CTX_set_read_ahead(ctx, 1);
+#else
+    SSL_CTX_set_read_ahead(ctx, 1);
 #endif
     SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE
                           | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER
@@ -565,6 +576,7 @@ av_tls_ctx *av_tls_client_ctx_new(const char *ca_file, const char *alpn,
      * SSL_OP_CIPHER_SERVER_PREFERENCE, which means nothing to a client. */
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION | SSL_OP_NO_RENEGOTIATION);
+    SSL_CTX_set_read_ahead(ctx, 1);
     SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE
                           | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER
                           | SSL_MODE_RELEASE_BUFFERS);
@@ -860,7 +872,10 @@ long av_tls_sendfile(av_tls *tls, int fd, long offset, long n) {
 
 int av_tls_pending(av_tls *tls) {
     if (!tls || !tls->ssl) return 0;
-    return SSL_pending(tls->ssl);
+    int decrypted = SSL_pending(tls->ssl);
+    if (decrypted > 0) return decrypted;
+    /* Read ahead of the record just returned, and not decrypted yet. */
+    return SSL_has_pending(tls->ssl) ? 1 : 0;
 }
 
 int av_tls_idle_ok(av_tls *tls) {

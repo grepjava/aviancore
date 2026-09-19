@@ -10,6 +10,14 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## 0.6.6 — 2026-09-19
+
+- TLS reads go ahead: OpenSSL reads what the socket has in one call rather
+  than a record's 5-byte header and then its body in two, halving the reads
+  an HTTPS request costs. Not under `--ktls`. `av_tls_pending` now also
+  counts bytes read ahead and not yet decrypted, so a caller that reads until
+  it is zero still finds a pipelined record the socket no longer announces.
+
 ## 0.6.5 — 2026-09-19
 
 - `av_sched_set_slice` asks the scheduler to run the calling thread in
