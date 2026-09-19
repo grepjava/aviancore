@@ -75,6 +75,8 @@ long av_tls_write(av_tls *tls, const void *buf, long n) {
 int av_tls_enable_ktls(int on) { (void)on; return 0; }
 int av_tls_kernel_ready(void) { return 0; }
 int av_tls_ktls_send(av_tls *tls) { (void)tls; return 0; }
+int av_tls_ktls_recv(av_tls *tls) { (void)tls; return 0; }
+int av_tls_release_to_kernel(av_tls *tls) { (void)tls; return 0; }
 long av_tls_sendfile(av_tls *tls, int fd, long offset, long n) {
     (void)tls; (void)fd; (void)offset; (void)n; errno = EPIPE; return -1;
 }
@@ -784,6 +786,38 @@ int av_tls_ktls_send(av_tls *tls) {
 #endif
 }
 
+int av_tls_ktls_recv(av_tls *tls) {
+#if defined(SSL_OP_ENABLE_KTLS) && !defined(OPENSSL_NO_KTLS)
+    if (!tls || !tls->ssl) return 0;
+    BIO *rbio = SSL_get_rbio(tls->ssl);
+    return rbio && BIO_get_ktls_recv(rbio) ? 1 : 0;
+#else
+    (void)tls;
+    return 0;
+#endif
+}
+
+int av_tls_release_to_kernel(av_tls *tls) {
+#if defined(SSL_OP_ENABLE_KTLS) && !defined(OPENSSL_NO_KTLS)
+    if (!tls || !tls->ssl || tls->h2 || tls->acme || tls->wants_write) return 0;
+    if (!av_tls_ktls_send(tls) || !av_tls_ktls_recv(tls)) return 0;
+    /* Anything OpenSSL has read and not handed over, or has half-sent, would
+     * be lost with it. */
+    if (SSL_has_pending(tls->ssl) || SSL_pending(tls->ssl) > 0) return 0;
+    if (SSL_get_shutdown(tls->ssl) != 0) return 0;
+    if (!SSL_is_init_finished(tls->ssl)) return 0;
+    /* SSL_free sends nothing, and the socket BIO does not own the descriptor,
+     * so the connection goes on exactly as the kernel has it. */
+    SSL_free(tls->ssl);
+    tls->ssl = NULL;
+    free(tls);
+    return 1;
+#else
+    (void)tls;
+    return 0;
+#endif
+}
+
 long av_tls_sendfile(av_tls *tls, int fd, long offset, long n) {
 #if defined(SSL_OP_ENABLE_KTLS) && !defined(OPENSSL_NO_KTLS)
     if (!tls || !tls->ssl) { errno = EPIPE; return -1; }
@@ -874,3 +908,45 @@ void av_tls_shutdown(av_tls *tls) {
 }
 
 #endif /* AV_NO_OPENSSL */
+
+/* ------------------------------------------------------------------------ */
+/* A connection whose TLS is the kernel's alone                             */
+/* ------------------------------------------------------------------------ */
+
+#if defined(__linux__)
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#ifndef SOL_TLS
+#define SOL_TLS 282
+#endif
+#ifndef TLS_SET_RECORD_TYPE
+#define TLS_SET_RECORD_TYPE 1
+#endif
+
+int av_ktls_close_notify(int fd) {
+    /* An alert record: warning (1), close_notify (0). The kernel frames and
+     * encrypts it like any other record once told its type. */
+    unsigned char alert[2] = { 1, 0 };
+    struct iovec iov = { alert, sizeof alert };
+    union {
+        struct cmsghdr align;
+        char buf[CMSG_SPACE(sizeof(unsigned char))];
+    } control;
+    memset(&control, 0, sizeof control);
+    struct msghdr msg;
+    memset(&msg, 0, sizeof msg);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.buf;
+    msg.msg_controllen = sizeof control.buf;
+    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+    c->cmsg_level = SOL_TLS;
+    c->cmsg_type = TLS_SET_RECORD_TYPE;
+    c->cmsg_len = CMSG_LEN(sizeof(unsigned char));
+    *CMSG_DATA(c) = 21; /* alert */
+    return sendmsg(fd, &msg, MSG_DONTWAIT | MSG_NOSIGNAL) == (ssize_t)sizeof alert ? 0 : -1;
+}
+#else
+int av_ktls_close_notify(int fd) { (void)fd; errno = ENOTSUP; return -1; }
+#endif

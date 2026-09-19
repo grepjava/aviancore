@@ -41,6 +41,15 @@ public struct Poller {
         av_poll_add(fd, target, mask.rawValue, token) == 0
     }
 
+    /// Adds a descriptor several pollers share, so that the kernel wakes one
+    /// waiting poller for it rather than every one. It can only be removed
+    /// and added again, never modified. See `av_poll_add_exclusive`.
+    @inlinable
+    @discardableResult
+    public func addExclusive(_ target: Int32, _ mask: PollMask, token: UInt64) -> Bool {
+        av_poll_add_exclusive(fd, target, mask.rawValue, token) == 0
+    }
+
     @inlinable
     @discardableResult
     public func modify(_ target: Int32, _ mask: PollMask, token: UInt64) -> Bool {

@@ -90,6 +90,24 @@ int av_tls_kernel_ready(void);
  * through here. */
 int av_tls_ktls_send(av_tls *tls);
 
+/* 1 when the kernel also decrypts what this session receives. */
+int av_tls_ktls_recv(av_tls *tls);
+
+/* Gives the session up to the kernel, for a connection about to be handed to
+ * another worker process: an OpenSSL session is memory in this one and cannot
+ * go with it, but once the kernel encrypts and decrypts both ways the socket
+ * carries the whole of TLS. Succeeds, freeing `tls` without a word on the
+ * wire, only when both directions are the kernel's and OpenSSL holds nothing
+ * read or half-written; 0 leaves `tls` as it was. After it, the descriptor is
+ * read and written with read(2) and write(2). A record that is not
+ * application data -- an alert, or a key update the kernel cannot apply --
+ * fails the read with EIO, and ends the connection. */
+int av_tls_release_to_kernel(av_tls *tls);
+
+/* Sends close_notify on a connection whose TLS is the kernel's alone. 0, or
+ * -1 with errno. */
+int av_ktls_close_notify(int fd);
+
 /* SSL_sendfile: `n` bytes of `fd` starting at `offset`, encrypted by the
  * kernel. Shaped like av_tls_write. Only when av_tls_ktls_send says 1. */
 long av_tls_sendfile(av_tls *tls, int fd, long offset, long n);

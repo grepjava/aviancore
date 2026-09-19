@@ -41,6 +41,9 @@ enum {
     AV_M_CACHE_HITS,              /* answered from --cache-size */
     AV_M_CACHE_MISSES,            /* looked up in the cache and not found */
     AV_M_CACHE_STORES,            /* responses stored in the cache */
+    AV_M_CONNECTIONS_HANDED_OFF,  /* idle connections given to a less busy worker */
+    AV_M_CONNECTIONS_TAKEN_OVER,  /* ...and taken from a busier one */
+    AV_M_ACCEPTS_DEFERRED,        /* times a worker left the listener to the others */
     AV_M_DURATION_COUNT,
     AV_M_DURATION_SUM_US,
     AV_M_BUCKET0,

@@ -38,6 +38,12 @@ int  av_poll_create(void);
 int  av_poll_add(int pfd, int fd, uint32_t mask, uint64_t token);
 int  av_poll_mod(int pfd, int fd, uint32_t mask, uint64_t token);
 int  av_poll_del(int pfd, int fd, uint32_t last_mask);
+/* Adds a descriptor that several pollers watch -- a listener every worker
+ * shares -- so that the kernel wakes one waiting poller for it rather than all
+ * of them (EPOLLEXCLUSIVE). Only an idle worker is waiting, so a connection
+ * goes to a worker with time for it. It cannot be modified afterwards, only
+ * removed and added again. On kqueue this is a plain add. */
+int  av_poll_add_exclusive(int pfd, int fd, uint32_t mask, uint64_t token);
 /* Returns number of events, or -1 with errno (EINTR is reported as 0). */
 int  av_poll_wait(int pfd, av_event *out, int max_events, int timeout_ms);
 
@@ -61,6 +67,19 @@ int av_listen_unix(const char *path, int backlog, int unlink_existing);
 /* accept4() where available, accept()+fcntl() elsewhere. Fills `peer` with a
  * printable address and `peer_port`. Returns fd, or -1 with errno. */
 int av_accept(int lfd, char *peer, size_t peer_len, uint16_t *peer_port);
+
+/* Handing a connection to another worker process. A datagram unix socket pair,
+ * non-blocking and close-on-exec: each message is one descriptor, passed with
+ * SCM_RIGHTS, and a few bytes saying what the sender knew about it. Datagrams
+ * keep the two together, and a descriptor in flight belongs to the socket, not
+ * to either process, so it survives the receiver being replaced. */
+int av_handoff_pair(int fds[2]);
+/* Sends `fd` with `meta`. Bytes sent, or -1 with errno (EAGAIN when the
+ * receiver is behind). The caller still owns and must close its own copy. */
+long av_send_fd(int chan, int fd, const void *meta, size_t meta_len);
+/* Receives one message: its bytes into `meta`, the descriptor into `*fd`, which
+ * is -1 when none came. Bytes received, or -1 with errno. */
+long av_recv_fd(int chan, int *fd, void *meta, size_t cap);
 
 /* Starts a TCP connection and returns at once. The socket is non-blocking and
  * close-on-exec, so the caller waits for writability and then asks

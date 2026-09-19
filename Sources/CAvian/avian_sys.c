@@ -58,6 +58,17 @@ static int epoll_ctl_op(int pfd, int op, int fd, uint32_t mask, uint64_t token) 
 int av_poll_add(int pfd, int fd, uint32_t mask, uint64_t token) {
     return epoll_ctl_op(pfd, EPOLL_CTL_ADD, fd, mask, token);
 }
+int av_poll_add_exclusive(int pfd, int fd, uint32_t mask, uint64_t token) {
+    /* EPOLLEXCLUSIVE refuses EPOLLRDHUP, which to_epoll always adds: a
+     * listener has no peer to half-close, so it is not missed. */
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.events = EPOLLEXCLUSIVE;
+    if (mask & AV_POLL_READ)  ev.events |= EPOLLIN;
+    if (mask & AV_POLL_WRITE) ev.events |= EPOLLOUT;
+    ev.data.u64 = token;
+    return epoll_ctl(pfd, EPOLL_CTL_ADD, fd, &ev);
+}
 int av_poll_mod(int pfd, int fd, uint32_t mask, uint64_t token) {
     return epoll_ctl_op(pfd, EPOLL_CTL_MOD, fd, mask, token);
 }
@@ -121,6 +132,9 @@ static int kq_apply(int pfd, int fd, uint32_t mask, uint64_t token) {
 }
 
 int av_poll_add(int pfd, int fd, uint32_t mask, uint64_t token) { return kq_apply(pfd, fd, mask, token); }
+/* kqueue has no exclusive wake-up: every worker watching a shared listener is
+ * woken, and the ones that lose the race to accept get EAGAIN. */
+int av_poll_add_exclusive(int pfd, int fd, uint32_t mask, uint64_t token) { return kq_apply(pfd, fd, mask, token); }
 int av_poll_mod(int pfd, int fd, uint32_t mask, uint64_t token) { return kq_apply(pfd, fd, mask, token); }
 int av_poll_del(int pfd, int fd, uint32_t last_mask) {
     (void)last_mask;
@@ -347,6 +361,95 @@ int av_accept(int lfd, char *peer, size_t peer_len, uint16_t *peer_port) {
 #endif
     fill_peer(&ss, slen, peer, peer_len, peer_port);
     return fd;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Handing a connection to another worker                                   */
+/* ------------------------------------------------------------------------ */
+
+int av_handoff_pair(int fds[2]) {
+#if defined(__linux__)
+    if (socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, fds) != 0) return -1;
+#else
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, fds) != 0) return -1;
+    for (int i = 0; i < 2; i++) { av_set_nonblock(fds[i]); av_set_cloexec(fds[i]); }
+#endif
+    return 0;
+}
+
+long av_send_fd(int chan, int fd, const void *meta, size_t meta_len) {
+    struct iovec iov;
+    iov.iov_base = (void *)meta;
+    iov.iov_len = meta_len;
+    union {
+        struct cmsghdr align;
+        char buf[CMSG_SPACE(sizeof(int))];
+    } control;
+    memset(&control, 0, sizeof control);
+    struct msghdr msg;
+    memset(&msg, 0, sizeof msg);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.buf;
+    msg.msg_controllen = sizeof control.buf;
+    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(c), &fd, sizeof fd);
+    int flags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+    flags |= MSG_NOSIGNAL;
+#endif
+    ssize_t n;
+    do { n = sendmsg(chan, &msg, flags); } while (n < 0 && errno == EINTR);
+    return (long)n;
+}
+
+long av_recv_fd(int chan, int *fd, void *meta, size_t cap) {
+    *fd = -1;
+    struct iovec iov;
+    iov.iov_base = meta;
+    iov.iov_len = cap;
+    union {
+        struct cmsghdr align;
+        char buf[CMSG_SPACE(sizeof(int) * 4)];
+    } control;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof msg);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.buf;
+    msg.msg_controllen = sizeof control.buf;
+    int flags = MSG_DONTWAIT;
+#ifdef MSG_CMSG_CLOEXEC
+    flags |= MSG_CMSG_CLOEXEC;
+#endif
+    ssize_t n;
+    do { n = recvmsg(chan, &msg, flags); } while (n < 0 && errno == EINTR);
+    if (n < 0) return -1;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+        if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) continue;
+        int count = (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+        for (int i = 0; i < count; i++) {
+            int got;
+            memcpy(&got, CMSG_DATA(c) + sizeof(int) * (size_t)i, sizeof got);
+            /* One descriptor per message is the protocol; any extra would
+             * otherwise leak in this process. */
+            if (*fd < 0) *fd = got;
+            else close(got);
+        }
+    }
+#ifndef MSG_CMSG_CLOEXEC
+    if (*fd >= 0) av_set_cloexec(*fd);
+#endif
+    /* Truncated: not a message this side wrote. */
+    if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
+        if (*fd >= 0) { close(*fd); *fd = -1; }
+        errno = EMSGSIZE;
+        return -1;
+    }
+    return (long)n;
 }
 
 int av_local_addr(int fd, char *host, size_t host_len, uint16_t *port) {

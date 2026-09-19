@@ -1,0 +1,79 @@
+/* ---------------------------------------------------------------------------
+ * How busy each worker is, where every worker can see it.
+ *
+ * Workers are separate processes, and the kernel hands out connections without
+ * knowing which of them is behind. This page is how a worker finds out that it
+ * is: each one publishes its own load, and reads the others' when it decides
+ * whether to accept a connection or to hand one it holds to a sibling.
+ *
+ * The page is mapped MAP_SHARED before the first fork, like the metrics page
+ * (avian_metrics.h), and has one slot per worker slot and its replacement,
+ * padded to whole cache lines. A worker writes only its own slot, so the
+ * atomics are relaxed loads and stores: a reading one turn behind is still a
+ * reading.
+ *
+ * Load is two numbers. `busy` is the share of the last stretch of time the
+ * worker's loop spent working rather than waiting, in thousandths. `conns` is
+ * how many connections it holds. A worker that is waiting right now also says
+ * since when, so a reader can see that a worker whose last reading was busy has
+ * since gone quiet -- the reading itself is only refreshed when the loop turns,
+ * and a worker with nothing to do does not turn.
+ * ------------------------------------------------------------------------- */
+#ifndef AVIAN_LOAD_H
+#define AVIAN_LOAD_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* A slot's state. Only an active slot is offered connections. */
+#define AV_LOAD_ABSENT   0u
+#define AV_LOAD_ACTIVE   1u
+#define AV_LOAD_DRAINING 2u
+
+/* One worker's load, as a reader sees it. `busy` has already been discounted
+ * for however long the worker has been waiting. */
+typedef struct {
+    int32_t slot;
+    /* The hand-off channel the worker in this slot receives on: its worker
+     * index, which a replacement shares with the worker it replaces. */
+    int32_t channel;
+    uint32_t busy;
+    uint32_t conns;
+} av_load_view;
+
+/* Maps the page. Call once, before any fork. 0, or -1 with errno set. A second
+ * call is a no-op that succeeds. */
+int av_load_init(int slots);
+int av_load_enabled(void);
+int av_load_slots(void);
+
+/* The calling worker has started in `slot` and receives hand-offs on
+ * `channel`. */
+void av_load_join(int slot, int channel);
+/* Stopping: no longer offered anything, still counted as present. */
+void av_load_draining(int slot);
+/* Gone. Written by the worker as it exits. */
+void av_load_leave(int slot);
+/* The supervisor has reaped `pid`: whatever slot it held is gone, since a
+ * worker that crashed wrote nothing on its way out. */
+void av_load_reap(int pid);
+
+void av_load_publish(int slot, uint32_t busy_permille, uint32_t conns);
+/* The worker is about to wait (`since_us` > 0, monotonic) or has stopped
+ * waiting (0). */
+void av_load_waiting(int slot, uint64_t since_us);
+
+/* Every active slot, with busy discounted as of `now_us`: fully after the
+ * worker has waited `AV_LOAD_QUIET_US`, in proportion before. Returns how many
+ * were written, at most `cap`. */
+#define AV_LOAD_QUIET_US 20000u
+int av_load_snapshot(av_load_view *out, int cap, uint64_t now_us);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* AVIAN_LOAD_H */

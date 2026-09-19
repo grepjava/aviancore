@@ -10,6 +10,32 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## 0.6.0 — 2026-09-19
+
+What a server needs to spread connections evenly over worker processes.
+
+- `avian_load.h`, a page mapped before the fork where each worker publishes
+  how busy its loop is and how many connections it holds, and reads the
+  others'. A worker that is waiting says since when, and a reader discounts
+  its reading to nothing over 20 ms, since an idle loop does not turn to
+  refresh it. `av_load_reap` clears whatever slot a pid held, for a
+  supervisor whose worker crashed without saying so.
+- `av_poll_add_exclusive` registers a descriptor several pollers share -- a
+  listener every worker accepts from -- with `EPOLLEXCLUSIVE`, so that the
+  kernel wakes one waiting poller for it rather than all of them. It is a
+  plain add on kqueue. `Poller.addExclusive` is the Swift side.
+- `av_handoff_pair`, `av_send_fd` and `av_recv_fd` pass a connection's
+  descriptor and a short note from one process to another over a datagram
+  unix socket (`SCM_RIGHTS`).
+- `av_tls_ktls_recv` says whether the kernel decrypts what a session
+  receives. `av_tls_release_to_kernel` gives a session whose TLS the kernel
+  carries both ways up to it, freeing the OpenSSL side without a word on the
+  wire, so that the descriptor can go to another process with all of TLS in
+  it. `av_ktls_close_notify` then sends `close_notify` on such a socket.
+- Three metrics indices: connections handed off, connections taken over, and
+  accepts deferred. They come before the duration counters and shift their
+  numbers; code that uses the names needs only a rebuild.
+
 ## 0.5.0 — 2026-09-19
 
 - `LoopExecutor`, a task executor for a thread that runs its own event loop.
