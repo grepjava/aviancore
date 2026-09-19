@@ -20,7 +20,9 @@ typedef struct {
     _Atomic uint32_t conns;
     _Atomic uint64_t waiting_since;
     _Atomic int32_t pid;
-    unsigned char pad[AV_CACHE_LINE - 28];
+    _Atomic uint32_t accepting;
+    _Atomic uint32_t wait_us;
+    unsigned char pad[AV_CACHE_LINE - 36];
 } load_slot;
 
 _Static_assert(sizeof(load_slot) == AV_CACHE_LINE, "a slot is one cache line");
@@ -57,6 +59,8 @@ void av_load_join(int slot, int channel) {
     atomic_store_explicit(&s->waiting_since, 0, memory_order_relaxed);
     atomic_store_explicit(&s->channel, channel, memory_order_relaxed);
     atomic_store_explicit(&s->pid, (int32_t)getpid(), memory_order_relaxed);
+    atomic_store_explicit(&s->accepting, 0, memory_order_relaxed);
+    atomic_store_explicit(&s->wait_us, 0, memory_order_relaxed);
     /* Last, so a reader that sees the slot active sees the rest of it. */
     atomic_store_explicit(&s->state, AV_LOAD_ACTIVE, memory_order_release);
 }
@@ -89,6 +93,16 @@ void av_load_publish(int slot, uint32_t busy_permille, uint32_t conns) {
     atomic_store_explicit(&s->conns, conns, memory_order_relaxed);
 }
 
+void av_load_publish_wait(int slot, uint32_t wait_us) {
+    load_slot *s = at(slot);
+    if (s) atomic_store_explicit(&s->wait_us, wait_us, memory_order_relaxed);
+}
+
+void av_load_accepting(int slot, int on) {
+    load_slot *s = at(slot);
+    if (s) atomic_store_explicit(&s->accepting, on ? 1u : 0u, memory_order_relaxed);
+}
+
 void av_load_waiting(int slot, uint64_t since_us) {
     load_slot *s = at(slot);
     if (s) atomic_store_explicit(&s->waiting_since, since_us, memory_order_relaxed);
@@ -111,6 +125,8 @@ int av_load_snapshot(av_load_view *out, int cap, uint64_t now_us) {
         out[n].channel = atomic_load_explicit(&s->channel, memory_order_relaxed);
         out[n].busy = busy;
         out[n].conns = atomic_load_explicit(&s->conns, memory_order_relaxed);
+        out[n].accepting = atomic_load_explicit(&s->accepting, memory_order_relaxed);
+        out[n].wait_us = atomic_load_explicit(&s->wait_us, memory_order_relaxed);
         n++;
     }
     return n;

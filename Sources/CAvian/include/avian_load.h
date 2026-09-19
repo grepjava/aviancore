@@ -42,6 +42,12 @@ typedef struct {
     int32_t channel;
     uint32_t busy;
     uint32_t conns;
+    /* Whether the worker is watching a listener it shares with the others,
+     * and so will take a connection another leaves to it. */
+    uint32_t accepting;
+    /* How long a request arriving now would wait, in microseconds, as the
+     * worker estimates it (av_load_publish_wait). */
+    uint32_t wait_us;
 } av_load_view;
 
 /* Maps the page. Call once, before any fork. 0, or -1 with errno set. A second
@@ -62,6 +68,16 @@ void av_load_leave(int slot);
 void av_load_reap(int pid);
 
 void av_load_publish(int slot, uint32_t busy_permille, uint32_t conns);
+/* How long a request arriving at this worker now would wait before it is
+ * served, in microseconds. Busyness alone does not say: a worker half busy
+ * with requests that take milliseconds keeps a quick request waiting far
+ * longer than one nearly flat out with requests that take microseconds. */
+void av_load_publish_wait(int slot, uint32_t wait_us);
+/* The worker has started (1) or stopped (0) watching a listener it shares
+ * with the others. A worker that means to leave a connection to another needs
+ * to know that the other will be there to take it. */
+void av_load_accepting(int slot, int on);
+
 /* The worker is about to wait (`since_us` > 0, monotonic) or has stopped
  * waiting (0). */
 void av_load_waiting(int slot, uint64_t since_us);

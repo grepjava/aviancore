@@ -10,6 +10,22 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## 0.6.2 — 2026-09-19
+
+Two more readings on the load page, which spreading connections turned out
+to need.
+
+- `av_load_accepting` publishes whether a worker is watching a listener it
+  shares, and `av_load_view.accepting` reads it. A worker that leaves a new
+  connection to a less loaded one needs to know that one is there to take it:
+  without it, workers each deferring to another that had just done the same
+  left connections queued with every worker idle.
+- `av_load_publish_wait` publishes how long a request arriving now would
+  wait at a worker, and `av_load_view.wait_us` reads it. A worker moving
+  connections needs somewhere they will be served sooner, and busyness alone
+  does not say where: half busy with two-millisecond requests keeps a quick
+  one waiting longer than nearly flat out with quick ones.
+
 ## 0.6.0 — 2026-09-19
 
 What a server needs to spread connections evenly over worker processes.

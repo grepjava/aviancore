@@ -31,6 +31,18 @@ struct BalancingPrimitiveTests {
         #expect(views[0].slot == 0 && views[0].channel == 0)
         #expect(views[0].busy == 800 && views[0].conns == 12)
         #expect(views[1].slot == 2 && views[1].channel == 1 && views[1].busy == 1000)
+        // Not accepting until it says so.
+        #expect(views[0].accepting == 0)
+        av_load_accepting(0, 1)
+        _ = av_load_snapshot(&views, 8, now)
+        #expect(views[0].accepting == 1 && views[1].accepting == 0)
+        av_load_accepting(0, 0)
+        _ = av_load_snapshot(&views, 8, now)
+        #expect(views[0].accepting == 0)
+        #expect(views[0].wait_us == 0)
+        av_load_publish_wait(0, 1_250)
+        _ = av_load_snapshot(&views, 8, now)
+        #expect(views[0].wait_us == 1_250 && views[1].wait_us == 0)
 
         // Waiting for half the quiet period halves the reading; the whole of it
         // clears it; stopping waiting restores it.
