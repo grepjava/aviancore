@@ -43,6 +43,9 @@ struct BalancingPrimitiveTests {
         av_load_publish_wait(0, 1_250)
         _ = av_load_snapshot(&views, 8, now)
         #expect(views[0].wait_us == 1_250 && views[1].wait_us == 0)
+        av_load_publish_heavy(0, 3)
+        _ = av_load_snapshot(&views, 8, now)
+        #expect(views[0].heavy == 3 && views[1].heavy == 0)
         // A worker a moment into a turn is as it said; one that has been on a
         // single turn for the stall time has said nothing since, and is busy.
         av_load_awake(0, now - 1_000)

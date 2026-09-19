@@ -52,6 +52,9 @@ typedef struct {
      * more -- a handler holding its loop -- so its readings are stale and it
      * is not taking anything; busy reads 1000. */
     uint32_t stalled;
+    /* How many of its connections make requests that hold its loop for a
+     * long time, as the worker counts them (av_load_publish_heavy). */
+    uint32_t heavy;
 } av_load_view;
 
 /* Maps the page. Call once, before any fork. 0, or -1 with errno set. A second
@@ -77,6 +80,12 @@ void av_load_publish(int slot, uint32_t busy_permille, uint32_t conns);
  * with requests that take milliseconds keeps a quick request waiting far
  * longer than one nearly flat out with requests that take microseconds. */
 void av_load_publish_wait(int slot, uint32_t wait_us);
+/* How many of the worker's connections are heavy: their requests hold its
+ * loop long enough that anything else on the worker waits behind them. What
+ * counts as heavy is the worker's to decide. Workers that each hold one can
+ * leave every quick request waiting; gathering them on fewer workers frees
+ * the rest. */
+void av_load_publish_heavy(int slot, uint32_t heavy);
 /* The worker has started (1) or stopped (0) watching a listener it shares
  * with the others. A worker that means to leave a connection to another needs
  * to know that the other will be there to take it. */

@@ -10,6 +10,14 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## 0.6.4 — 2026-09-19
+
+- `av_load_publish_heavy` and `av_load_view.heavy`: how many of a worker's
+  connections make requests that hold its loop for a long time. A server can
+  then gather those on fewer workers, so that quick requests are not all
+  waiting behind one of them. Uses the slot's spare word; the page's size is
+  unchanged.
+
 ## 0.6.3 — 2026-09-19
 
 - `av_load_awake` records when a worker began its current turn of work, and
