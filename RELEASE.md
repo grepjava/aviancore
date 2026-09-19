@@ -10,6 +10,15 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## 0.6.3 — 2026-09-19
+
+- `av_load_awake` records when a worker began its current turn of work, and
+  `av_load_view.stalled` says a worker has been on one turn for 20 ms or more,
+  with its busy reading forced to 1000. A worker whose handler holds its loop
+  publishes nothing meanwhile, and its last reading could be that it was idle
+  and accepting: everyone else would keep leaving it connections it was not
+  going to take.
+
 ## 0.6.2 — 2026-09-19
 
 Two more readings on the load page, which spreading connections turned out

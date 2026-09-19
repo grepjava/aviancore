@@ -48,6 +48,10 @@ typedef struct {
     /* How long a request arriving now would wait, in microseconds, as the
      * worker estimates it (av_load_publish_wait). */
     uint32_t wait_us;
+    /* The worker has been working on one loop turn for AV_LOAD_STALL_US or
+     * more -- a handler holding its loop -- so its readings are stale and it
+     * is not taking anything; busy reads 1000. */
+    uint32_t stalled;
 } av_load_view;
 
 /* Maps the page. Call once, before any fork. 0, or -1 with errno set. A second
@@ -81,6 +85,12 @@ void av_load_accepting(int slot, int on);
 /* The worker is about to wait (`since_us` > 0, monotonic) or has stopped
  * waiting (0). */
 void av_load_waiting(int slot, uint64_t since_us);
+/* The worker has stopped waiting and begun a turn of work at `now_us`. What
+ * av_load_waiting(slot, 0) says, and when, so that a reader can tell a worker
+ * that has been busy on one turn for too long -- which publishes nothing
+ * meanwhile -- from one that is merely busy. */
+void av_load_awake(int slot, uint64_t now_us);
+#define AV_LOAD_STALL_US 20000u
 
 /* Every active slot, with busy discounted as of `now_us`: fully after the
  * worker has waited `AV_LOAD_QUIET_US`, in proportion before. Returns how many
