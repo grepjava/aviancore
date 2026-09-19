@@ -1,5 +1,10 @@
 import Testing
 import CAvian
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 @testable import AvianCore
 
 // What workers use to share connections fairly: the load page, a listener
@@ -158,5 +163,22 @@ struct BalancingPrimitiveTests {
         // Removing and adding again is how it is re-armed.
         #expect(a.remove(listener, last: .read))
         #expect(a.addExclusive(listener, .read, token: 7))
+    }
+
+    @Test func aThreadAsksForAShorterSlice() {
+        // The runner's thread, put back as it was afterwards.
+        let before = av_sched_slice()
+        let set = av_sched_set_slice(300_000)
+        let error = errno
+        let after = av_sched_slice()
+        if before >= 0 { _ = av_sched_set_slice(UInt64(before)) }
+        #if os(Linux)
+        // Accepted everywhere; recorded as asked where the kernel has custom
+        // slices, and 0 where it ignores them.
+        #expect(set == 0, "errno \(error)")
+        #expect(after == 300_000 || after == 0)
+        #else
+        #expect(set == -1 && error == ENOSYS && after == -1)
+        #endif
     }
 }

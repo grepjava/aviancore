@@ -967,6 +967,56 @@ int av_cpu_count(void) {
     return n > 0 ? (int)n : 1;
 }
 
+#if defined(__linux__) && defined(SYS_sched_setattr) && defined(SYS_sched_getattr)
+/* struct sched_attr, as the kernel defines it; glibc has no wrapper. */
+typedef struct {
+    uint32_t size;
+    uint32_t sched_policy;
+    uint64_t sched_flags;
+    int32_t  sched_nice;
+    uint32_t sched_priority;
+    uint64_t sched_runtime;
+    uint64_t sched_deadline;
+    uint64_t sched_period;
+} av_sched_attr;
+
+int av_sched_set_slice(uint64_t slice_ns) {
+    av_sched_attr attr;
+    memset(&attr, 0, sizeof attr);
+    if (syscall(SYS_sched_getattr, 0, &attr, (unsigned)sizeof attr, 0) != 0) return -1;
+    /* SCHED_OTHER is 0 and SCHED_BATCH 3: a real-time or deadline thread is
+     * someone else's decision. */
+    if (attr.sched_policy != 0 && attr.sched_policy != 3) {
+        errno = EPERM;
+        return -1;
+    }
+    attr.size = sizeof attr;
+    attr.sched_flags = 0;
+    attr.sched_runtime = slice_ns;
+    attr.sched_deadline = 0;
+    attr.sched_period = 0;
+    return syscall(SYS_sched_setattr, 0, &attr, 0) == 0 ? 0 : -1;
+}
+
+int64_t av_sched_slice(void) {
+    av_sched_attr attr;
+    memset(&attr, 0, sizeof attr);
+    if (syscall(SYS_sched_getattr, 0, &attr, (unsigned)sizeof attr, 0) != 0) return -1;
+    return (int64_t)attr.sched_runtime;
+}
+#else
+int av_sched_set_slice(uint64_t slice_ns) {
+    (void)slice_ns;
+    errno = ENOSYS;
+    return -1;
+}
+
+int64_t av_sched_slice(void) {
+    errno = ENOSYS;
+    return -1;
+}
+#endif
+
 long av_raise_nofile_limit(void) {
     struct rlimit rl;
     if (getrlimit(RLIMIT_NOFILE, &rl) != 0) return -1;

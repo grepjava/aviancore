@@ -222,6 +222,21 @@ pid_t av_getpid(void);
 int  av_cpu_count(void);
 /* Raise RLIMIT_NOFILE to its hard limit; returns the resulting soft limit. */
 long av_raise_nofile_limit(void);
+
+/* Asks the scheduler to run the calling thread in slices of `slice_ns`
+ * nanoseconds rather than its default (EEVDF's custom slice, Linux 6.12 and
+ * later; the kernel accepts 100 us to 100 ms). A thread that owns many
+ * connections and loses its CPU to another runnable thread keeps all of them
+ * waiting until it gets it back, for up to a whole slice -- 2.8 ms by default
+ * on an 8-CPU machine. A shorter slice brings it back sooner. Only a thread
+ * under the normal or batch policy is changed; its nice value is kept.
+ * 0, or -1 with errno: ENOSYS where there is no sched_setattr. An older kernel
+ * accepts the call and ignores the slice. */
+int  av_sched_set_slice(uint64_t slice_ns);
+/* The calling thread's slice as the kernel records it, in nanoseconds: what
+ * av_sched_set_slice asked for, or 0 when the kernel ignores custom slices or
+ * none was asked for. -1 with errno where it cannot be read. */
+int64_t av_sched_slice(void);
 /* Arms a SIGALRM that _exit()s the process after `seconds`, so a shutdown
  * that wedges anywhere still terminates. 0 seconds disarms. */
 void av_exit_after(unsigned seconds, int code);

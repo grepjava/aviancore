@@ -10,6 +10,16 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## 0.6.5 — 2026-09-19
+
+- `av_sched_set_slice` asks the scheduler to run the calling thread in
+  shorter slices (EEVDF's custom slice, Linux 6.12 and later), and
+  `av_sched_slice` reads back what it has. A worker that owns its
+  connections and loses its CPU to another thread keeps every one of them
+  waiting for up to a whole slice, 2.8 ms by default on an 8-CPU machine.
+  Elsewhere the call fails with `ENOSYS`, and an older Linux ignores the
+  slice.
+
 ## 0.6.4 — 2026-09-19
 
 - `av_load_publish_heavy` and `av_load_view.heavy`: how many of a worker's
