@@ -900,9 +900,22 @@ static BIO *greedy_bio(int fd, struct av_greedy **out) {
 /* Binds the TLS object to a socket. Under BoringSSL that is a BIO of our own
  * that reads ahead, since BoringSSL will not; under OpenSSL, told to read
  * ahead in configure_common, the library's own socket BIO already does. */
+/* The greedy BIO can be switched off with AVIAN_NO_GREEDY=1, which puts the
+ * record layer back on a plain socket BIO and so back to two reads a record.
+ * It exists to measure the BIO against itself in one binary, where two builds
+ * would differ in more than the one branch. */
+static int greedy_disabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("AVIAN_NO_GREEDY");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
 static int tls_attach(struct av_tls *tls, int fd) {
 #ifdef AVIAN_TLS_BORINGSSL
-    BIO *bio = greedy_bio(fd, &tls->greedy);
+    BIO *bio = greedy_disabled() ? NULL : greedy_bio(fd, &tls->greedy);
     if (bio) {
         /* One BIO for both directions takes one reference, and SSL_free
          * releases it. */

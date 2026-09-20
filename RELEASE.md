@@ -10,6 +10,18 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## Unreleased
+
+- `AVIAN_NO_GREEDY=1` in the environment puts the TLS record layer back on a
+  plain socket BIO, giving up the read-ahead and returning to two reads a
+  record. It exists so the greedy BIO can be measured against itself in one
+  binary, where two builds would differ in more than the one branch, and it
+  doubles as a way out if the BIO ever misbehaves against a particular peer.
+  Measured with it: the BIO is worth about 1% of throughput on a keep-alive
+  workload and about 4% of CPU a request over HTTP/2, and it is **not** the
+  cause of the HTTP/2 deficit recorded in Garuda's BENCHMARKS.md -- switching
+  it off makes HTTP/2 slower, not faster.
+
 ## 0.7.1 — 2026-09-20
 
 - **`av_tls_flush_control` puts pending TLS control messages on the wire
