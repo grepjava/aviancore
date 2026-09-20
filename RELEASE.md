@@ -10,30 +10,41 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
-## Unreleased
+## 0.7.0 — 2026-09-20
 
-- The TLS record layer and handshake can be built against BoringSSL instead
-  of OpenSSL, by defining `AVIAN_TLS_BORINGSSL` and linking a BoringSSL whose
-  symbols carry swift-nio-ssl's `CNIOBoringSSL` prefix:
+- **TLS is built against BoringSSL now, and a copy of it ships here.** The
+  record layer and the handshake are BoringSSL's; `avian_crypto.c`,
+  `avian_acme.c` and QUIC's primitives go on calling OpenSSL, which is still
+  linked and still required. Only the record layer and the handshake move.
 
-  ```
-  swift build -c release \
-      -Xcc -DAVIAN_TLS_BORINGSSL -Xcc -I<CNIOBoringSSL/include> \
-      -Xlinker <libCNIOBoringSSL.a>
-  ```
+  The copy lives at `Sources/CAvianSSL`, taken from swift-nio-ssl's already
+  pre-generated one so that it needs neither CMake nor Go, and re-prefixed
+  `CAvianSSL`. That re-prefix is load-bearing: keeping `CNIOBoringSSL` would
+  mean an application using both this and anything built on swift-nio-ssl
+  linking two different BoringSSL versions that each define
+  `CNIOBoringSSL_SSL_new`. `Sources/CAvianSSL/VENDORING.md` has the
+  provenance, the BoringSSL revision, and how to take a new release.
 
-  That symbol prefix is what makes this a choice one file can make:
-  `avian_crypto.c` and `avian_acme.c` go on calling OpenSSL, under its own
-  unprefixed symbols, in the same binary. So the switch moves the record
-  layer and the handshake and nothing else -- not JWT, not ACME's own client,
-  not QUIC's primitives.
+  **Vendoring makes this package responsible for a security dependency**:
+  when BoringSSL fixes something, it reaches anyone building on aviancore
+  only when the copy here is updated.
+
+  Building without `AVIAN_TLS_BORINGSSL` puts TLS back on OpenSSL. That path
+  is kept working, and is the only way to compare the two.
+
+  Two libraries can live in one binary only because BoringSSL's symbols carry
+  a prefix where OpenSSL's do not.
 
   The reason to want it is cost. Measured on one pinned core, the same source
   compiled against each library: a handshake **752.6 us against 447.7**, and
   a small record round trip, less the socketpair floor both pay, **5.19 us
   against 3.66**. BoringSSL never adopted OpenSSL 3.x's provider
   architecture, so it has none of the EVP object churn profiling finds in the
-  handshake here.
+  handshake here. Measured again through a server over HTTPS, across
+  fourteen workloads: **CPU a request falls on all fourteen and throughput
+  rises on thirteen**, `churn` -- a handshake a request -- gaining **40.5%**,
+  which is what the probe predicted to a tenth of a point. Garuda's
+  BENCHMARKS.md has the table.
 
   What it gives up is kernel TLS, which BoringSSL does not have. Every use of
   it was already behind `SSL_OP_ENABLE_KTLS`, which BoringSSL does not
