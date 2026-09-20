@@ -98,6 +98,7 @@ long av_tls_sendfile(av_tls *tls, int fd, long offset, long n) {
     (void)tls; (void)fd; (void)offset; (void)n; errno = EPIPE; return -1;
 }
 int av_tls_pending(av_tls *tls) { (void)tls; return 0; }
+int av_tls_flush_control(av_tls *tls) { (void)tls; errno = EPIPE; return -1; }
 int av_tls_idle_ok(av_tls *tls) { (void)tls; return 0; }
 int av_tls_wants_write(av_tls *tls) { (void)tls; return 0; }
 int av_tls_is_h2(av_tls *tls) { (void)tls; return 0; }
@@ -1109,6 +1110,29 @@ long av_tls_sendfile(av_tls *tls, int fd, long offset, long n) {
     (void)tls; (void)fd; (void)offset; (void)n;
     errno = EPIPE;
     return -1;
+#endif
+}
+
+int av_tls_flush_control(av_tls *tls) {
+    if (!tls || !tls->ssl) { errno = EPIPE; return -1; }
+#ifdef AVIAN_TLS_BORINGSSL
+    /* A write of length zero is BoringSSL's documented way to push the control
+     * messages it is holding -- a session ticket, a key update -- without
+     * sending any application data with them. */
+    int rc = SSL_write(tls->ssl, "", 0);
+    if (rc >= 0) return 0;
+    int reason = SSL_get_error(tls->ssl, rc);
+    ERR_clear_error();
+    if (reason == SSL_ERROR_WANT_READ || reason == SSL_ERROR_WANT_WRITE) {
+        if (reason == SSL_ERROR_WANT_WRITE) tls->wants_write = 1;
+        errno = EAGAIN;
+        return -1;
+    }
+    errno = EPIPE;
+    return -1;
+#else
+    /* OpenSSL sent the ticket as the handshake finished. */
+    return 0;
 #endif
 }
 

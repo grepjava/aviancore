@@ -118,6 +118,24 @@ long av_tls_sendfile(av_tls *tls, int fd, long offset, long n);
  * reads has to keep asking until this is zero. */
 int av_tls_pending(av_tls *tls);
 
+/* Sends whatever the library is holding back that is not application data.
+ *
+ * Under BoringSSL that means the TLS 1.3 session ticket, which it keeps until
+ * the first application write on purpose, so that the ticket travels with the
+ * response instead of costing a write of its own. For a server answering
+ * requests that is the better arrangement and this need never be called: the
+ * ticket goes out with the first response and clients resume normally.
+ *
+ * It is here for a server that wants the ticket out before it has anything to
+ * say -- and for tests, which otherwise cannot produce a connection whose only
+ * readable byte is a ticket.
+ *
+ * OpenSSL has already sent the ticket by the time the handshake reports
+ * success, so this does nothing there. 0 when there is nothing left to send,
+ * -1 with errno EAGAIN when the socket would block and the caller should ask
+ * again, -1 with EPIPE when the connection is gone. */
+int av_tls_flush_control(av_tls *tls);
+
 /* An idle pooled connection had something to say. 1 when it was only
  * post-handshake bookkeeping -- a session ticket, a key update -- and the
  * connection is still good to hand to the next caller; 0 when application data

@@ -50,7 +50,17 @@ tests of itself.
   it was already behind `SSL_OP_ENABLE_KTLS`, which BoringSSL does not
   define, so it compiles out on its own: `av_tls_ktls_send`,
   `av_tls_ktls_recv` and `av_tls_release_to_kernel` answer 0, and
-  `av_tls_sendfile` encrypts in process.
+  `av_tls_sendfile` encrypts in process. A server that passes `--ktls` still
+  starts; the request is accepted and has no effect.
+
+  **That loss is not small for a server sending large files.** Measured on
+  small requests kernel TLS was a regression, which made it look cheap to give
+  up; on `sendfile` it is not, and the workloads that made it look cheap never
+  sent a large file. How much it costs is being measured against this change
+  rather than quoted from before it, and will be stated when it is. Anyone
+  serving large files should weigh it against the handshake and per-request
+  savings, and can build without `AVIAN_TLS_BORINGSSL` to keep OpenSSL and
+  kernel TLS.
 - Under BoringSSL the socket BIO is replaced by one that reads ahead, because
   BoringSSL will not. `SSL_CTX_set_read_ahead` is one of the calls it keeps
   for compatibility and does nothing with, so its record layer takes a
