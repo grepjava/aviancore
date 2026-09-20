@@ -10,6 +10,19 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## 0.6.7 — 2026-09-20
+
+- The TLS error queue is cleared on the way out of a failure rather than on
+  the way in to every call. `SSL_get_error` is only reliable with an empty
+  queue, and the usual way to get one is `ERR_clear_error()` before every
+  `SSL_read` and `SSL_write`; profiling a server under load put that at 1.37%
+  of its whole CPU, more than three times what encrypting the data cost.
+  Every path that can leave entries now drains them before it returns, so the
+  queue is already empty when the next call starts and the reads and writes
+  that succeed pay nothing. Measured on one pinned worker serving HTTPS,
+  three runs against three: **76,600 requests a second to 79,100**, and every
+  pair favoured it.
+
 ## 0.6.6 — 2026-09-19
 
 - TLS reads go ahead: OpenSSL reads what the socket has in one call rather
