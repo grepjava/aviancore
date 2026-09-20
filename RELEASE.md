@@ -36,10 +36,11 @@ tests of itself.
   BoringSSL treats as exactly that), and answers 0 on success. Under OpenSSL
   it succeeds without doing anything, since there is nothing held back.
 
-- The kernel-TLS costs quoted under 0.7.0 are now marked provisional there.
-  They came from a run whose arm order was not rotated, and a re-measurement
-  that rotates it is outstanding. The direction is not in doubt; the
-  magnitudes are not settled.
+- The kernel-TLS costs quoted under 0.7.0 are **withdrawn**, and 0.7.0 now
+  says so. A rotated seven-round re-measurement put the difference at 1 MiB
+  and 16 MiB inside run-to-run variation, after earlier runs had suggested 8%
+  and 14%. Five values have come back for nominally one quantity; the box
+  cannot resolve it.
 
 ## 0.7.0 — 2026-09-20
 
@@ -84,19 +85,17 @@ tests of itself.
   `av_tls_sendfile` encrypts in process. A server that passes `--ktls` still
   starts; the request is accepted and has no effect.
 
-  **What that costs is being measured and the first answer is provisional.**
-  Peregrine, one worker, static files: HTTPS/1.1 files go out about **8%
-  slower at 1 MiB and 14% slower at 16 MiB**, for about 15% more CPU a
-  gibibyte, with nothing lost below about 64 KiB -- BoringSSL is 19% ahead
-  there despite having no kernel TLS -- and nothing lost over HTTP/2, whose
-  framed bytes could never take `sendfile` anyway. Those rows came from two
-  rounds that both ran the baseline first, an order that has demonstrably
-  invented an effect of this size elsewhere, so they are held pending a
-  four-round run that rotates the leading arm. The direction is what the
-  mechanism predicts; the magnitudes are not settled. Anyone serving large
-  files over HTTP/1.1 should weigh that against a handshake 40 to 45%
-  cheaper, and can build without `AVIAN_TLS_BORINGSSL` to keep OpenSSL and
-  kernel TLS.
+  **What that costs could not be measured, and earlier figures here are
+  withdrawn.** A rotated seven-round run on a 4-CPU box put BoringSSL against
+  OpenSSL-with-kernel-TLS at 1 MiB and 16 MiB inside run-to-run variation --
+  at 1 MiB the sign changed three times across six rounds around a 4.5-point
+  mean. Earlier runs had reported 8% and 14% at those sizes; those are wrong,
+  not merely imprecise. At 64 KiB BoringSSL is ahead, and over HTTP/2 kernel
+  TLS was always the slower of the two, framed bytes never having been able to
+  take `sendfile`. Against OpenSSL *without* kernel TLS the same run puts
+  static files **23 to 45% faster**, CPU a gibibyte down 19 to 31%, in all six
+  cells. A build that needs kernel TLS can have it: leave out
+  `AVIAN_TLS_BORINGSSL`.
 - Under BoringSSL the socket BIO is replaced by one that reads ahead, because
   BoringSSL will not. `SSL_CTX_set_read_ahead` is one of the calls it keeps
   for compatibility and does nothing with, so its record layer takes a
