@@ -40,6 +40,17 @@ tests of itself.
   define, so it compiles out on its own: `av_tls_ktls_send`,
   `av_tls_ktls_recv` and `av_tls_release_to_kernel` answer 0, and
   `av_tls_sendfile` encrypts in process.
+- Under BoringSSL the socket BIO is replaced by one that reads ahead, because
+  BoringSSL will not. `SSL_CTX_set_read_ahead` is one of the calls it keeps
+  for compatibility and does nothing with, so its record layer takes a
+  record's 5-byte header and its body in two reads where OpenSSL takes one:
+  **exactly 2.00 reads a request against 1.00**, counted off a worker while
+  it served. The replacement reads whatever the socket has into a buffer and
+  answers the header out of it, so the body -- and any record queued behind
+  it -- is already in hand, and reads a request are 1.00 again. `av_tls_pending`
+  counts what the BIO holds, since those bytes are no longer in the socket and
+  a poller would otherwise wait for what has already arrived. If the BIO
+  cannot be made, the plain socket BIO is used instead.
 - The ACME `tls-alpn-01` ClientHello callback is written once and adapted to
   each library rather than assuming OpenSSL's shape. OpenSSL passes the `SSL`
   and an argument of the caller's choosing; BoringSSL passes an

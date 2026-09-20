@@ -110,6 +110,7 @@ void av_tls_shutdown(av_tls *tls) { (void)tls; }
 
 #include <stdio.h>
 #include <strings.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 
 /* AVIAN_TLS_BORINGSSL builds the record layer and the handshake against
@@ -169,6 +170,32 @@ struct av_tls_ctx {
     char *acme_dir;
 };
 
+#ifdef AVIAN_TLS_BORINGSSL
+/* BoringSSL has no read ahead. SSL_CTX_set_read_ahead is one of the calls it
+ * keeps for compatibility and does nothing with -- its header says the
+ * function "returns one", and that is the whole of it -- so its record layer
+ * asks the socket for a record's 5-byte header, learns the body's length from
+ * it, and asks again for the body. Two reads where OpenSSL, told to read
+ * ahead, costs one: measured at exactly 1.00 against 2.00 reads a request.
+ *
+ * So the socket BIO is replaced by one that reads greedily. Asked for the
+ * header, it reads whatever the socket has into a buffer and answers out of
+ * it; the body is then already in hand, and so is any record queued behind
+ * it. That is what OpenSSL's read ahead does internally, and BoringSSL has no
+ * BIO_f_buffer to compose it from, so it is written out here.
+ *
+ * The buffer is why av_tls_pending has to count it. Bytes held here are bytes
+ * the socket no longer holds, so a poller waiting for the socket to become
+ * readable would be waiting for what has already arrived. */
+#define AV_GREEDY_BUF 16384
+
+struct av_greedy {
+    int fd;
+    int start, end;                     /* the filled part of buf */
+    unsigned char buf[AV_GREEDY_BUF];
+};
+#endif
+
 struct av_tls {
     SSL *ssl;
     int wants_write;
@@ -176,7 +203,15 @@ struct av_tls {
     /* The connection negotiated acme-tls/1: a CA validating a challenge, to
      * be closed as soon as the handshake is done. */
     int acme;
+#ifdef AVIAN_TLS_BORINGSSL
+    /* Owned by the BIO, which frees it; held here only so that
+     * av_tls_pending can ask what is still buffered. */
+    struct av_greedy *greedy;
+#endif
 };
+
+/* Binds a TLS object to a socket; defined with the BIO it may install. */
+static int tls_attach(struct av_tls *tls, int fd);
 
 /* Marks a connection that is being served a challenge certificate, so that the
  * SNI and ALPN callbacks leave it alone. Allocated once per process. */
@@ -725,7 +760,7 @@ av_tls *av_tls_client_new(av_tls_ctx *ctx, int fd, const char *hostname) {
     if (!tls) return NULL;
     tls->ssl = SSL_new(ctx->ctx);
     if (!tls->ssl) { free(tls); return NULL; }
-    if (SSL_set_fd(tls->ssl, fd) != 1) {
+    if (!tls_attach(tls, fd)) {
         SSL_free(tls->ssl);
         free(tls);
         return NULL;
@@ -766,13 +801,119 @@ av_tls *av_tls_client_new(av_tls_ctx *ctx, int fd, const char *hostname) {
     return tls;
 }
 
+#ifdef AVIAN_TLS_BORINGSSL
+
+static int greedy_read(BIO *bio, char *out, int len) {
+    struct av_greedy *g = (struct av_greedy *)BIO_get_data(bio);
+    if (!g || !out || len <= 0) return 0;
+    BIO_clear_retry_flags(bio);
+    if (g->start == g->end) {
+        ssize_t n;
+        do { n = read(g->fd, g->buf, sizeof g->buf); } while (n < 0 && errno == EINTR);
+        if (n <= 0) {
+            /* A short read is the socket being empty, not the end of it. Say
+             * so, or the record layer reports a broken connection. */
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) BIO_set_retry_read(bio);
+            return (int)n;
+        }
+        g->start = 0;
+        g->end = (int)n;
+    }
+    int have = g->end - g->start;
+    if (have > len) have = len;
+    memcpy(out, g->buf + g->start, (size_t)have);
+    g->start += have;
+    return have;
+}
+
+static int greedy_write(BIO *bio, const char *in, int len) {
+    struct av_greedy *g = (struct av_greedy *)BIO_get_data(bio);
+    if (!g || !in || len <= 0) return 0;
+    BIO_clear_retry_flags(bio);
+    ssize_t n;
+    do { n = write(g->fd, in, (size_t)len); } while (n < 0 && errno == EINTR);
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) BIO_set_retry_write(bio);
+    return (int)n;
+}
+
+static long greedy_ctrl(BIO *bio, int cmd, long larg, void *parg) {
+    struct av_greedy *g = (struct av_greedy *)BIO_get_data(bio);
+    (void)larg; (void)parg;
+    switch (cmd) {
+    /* Nothing is held on the way out: writes go straight to the socket. */
+    case BIO_CTRL_FLUSH:   return 1;
+    case BIO_CTRL_PENDING: return g ? g->end - g->start : 0;
+    case BIO_CTRL_EOF:     return 0;
+    default:               return 0;
+    }
+}
+
+static int greedy_destroy(BIO *bio) {
+    if (!bio) return 0;
+    free(BIO_get_data(bio));
+    BIO_set_data(bio, NULL);
+    return 1;
+}
+
+/* One method for the process, made once. The socket is not closed here: the
+ * worker owns the descriptor and closes it itself. */
+static BIO_METHOD *greedy_meth = NULL;
+static pthread_once_t greedy_once = PTHREAD_ONCE_INIT;
+
+static void make_greedy_meth(void) {
+    BIO_METHOD *m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK, "avian greedy");
+    if (!m) return;
+    if (!BIO_meth_set_read(m, greedy_read) || !BIO_meth_set_write(m, greedy_write)
+        || !BIO_meth_set_ctrl(m, greedy_ctrl) || !BIO_meth_set_destroy(m, greedy_destroy)) {
+        BIO_meth_free(m);
+        return;
+    }
+    greedy_meth = m;
+}
+
+/* A BIO over `fd` that reads ahead. NULL if it cannot be made, and the caller
+ * falls back to the plain socket BIO: an extra read a request is worth far
+ * more than a connection refused. */
+static BIO *greedy_bio(int fd, struct av_greedy **out) {
+    pthread_once(&greedy_once, make_greedy_meth);
+    if (!greedy_meth) return NULL;
+    struct av_greedy *g = calloc(1, sizeof *g);
+    if (!g) return NULL;
+    g->fd = fd;
+    BIO *bio = BIO_new(greedy_meth);
+    if (!bio) { free(g); return NULL; }
+    BIO_set_data(bio, g);
+    BIO_set_init(bio, 1);
+    *out = g;
+    return bio;
+}
+
+#endif /* AVIAN_TLS_BORINGSSL */
+
+/* Binds the TLS object to a socket. Under BoringSSL that is a BIO of our own
+ * that reads ahead, since BoringSSL will not; under OpenSSL, told to read
+ * ahead in configure_common, the library's own socket BIO already does. */
+static int tls_attach(struct av_tls *tls, int fd) {
+#ifdef AVIAN_TLS_BORINGSSL
+    BIO *bio = greedy_bio(fd, &tls->greedy);
+    if (bio) {
+        /* One BIO for both directions takes one reference, and SSL_free
+         * releases it. */
+        SSL_set_bio(tls->ssl, bio, bio);
+        return 1;
+    }
+    tls->greedy = NULL;
+#endif
+    return SSL_set_fd(tls->ssl, fd) == 1;
+}
+
 av_tls *av_tls_new(av_tls_ctx *ctx, int fd) {
     if (!ctx) return NULL;
     struct av_tls *tls = calloc(1, sizeof *tls);
     if (!tls) return NULL;
     tls->ssl = SSL_new(ctx->ctx);
     if (!tls->ssl) { free(tls); return NULL; }
-    if (SSL_set_fd(tls->ssl, fd) != 1) {
+    if (!tls_attach(tls, fd)) {
         SSL_free(tls->ssl);
         free(tls);
         return NULL;
@@ -969,6 +1110,13 @@ int av_tls_pending(av_tls *tls) {
     if (!tls || !tls->ssl) return 0;
     int decrypted = SSL_pending(tls->ssl);
     if (decrypted > 0) return decrypted;
+#ifdef AVIAN_TLS_BORINGSSL
+    /* Bytes the greedy BIO read ahead and the record layer has not taken yet.
+     * SSL_has_pending does not know about them -- they are behind the BIO,
+     * not inside the SSL -- and they are no longer in the socket either, so
+     * without this a poller would wait for what has already arrived. */
+    if (tls->greedy && tls->greedy->end > tls->greedy->start) return 1;
+#endif
     /* Read ahead of the record just returned, and not decrypted yet. */
     return SSL_has_pending(tls->ssl) ? 1 : 0;
 }
