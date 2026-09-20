@@ -13,7 +13,8 @@ server builds its own on top of these modules.
 
 | Module | What it holds |
 | --- | --- |
-| `CAvian` | C shim: epoll/kqueue, sockets, signals, fork, `sendfile`, threads, TLS over TCP (`avian_tls.c`), crypto primitives for QUIC (`avian_crypto.c`), UDP with `recvmmsg` and GSO (`avian_udp.c`), ACME, gzip/brotli/zstd, file watching, the shared-memory tables for metrics, worker load, rate limiting and a response cache, the broadcast ring that carries messages between worker processes, and passing a connection from one worker process to another |
+| `CAvianSSL` | A vendored BoringSSL, re-prefixed `CAvianSSL_` so it cannot collide with another copy in the same binary. It is the TLS record layer and handshake. `Sources/CAvianSSL/VENDORING.md` has the provenance and how to take a new release |
+| `CAvian` | C shim: epoll/kqueue, sockets, signals, fork, `sendfile`, threads, TLS over TCP (`avian_tls.c`, on `CAvianSSL`), crypto primitives for QUIC (`avian_crypto.c`), UDP with `recvmmsg` and GSO (`avian_udp.c`), ACME, gzip/brotli/zstd, file watching, the shared-memory tables for metrics, worker load, rate limiting and a response cache, the broadcast ring that carries messages between worker processes, and passing a connection from one worker process to another |
 | `AvianCore` | `ByteBuffer`, `BufferPool`, `Poller`, `LoopExecutor`, logging, civil time |
 | `AvianHTTP` | HTTP/1.1 request parser, chunked decoder, response writer and parser, request writer, HPACK, QPACK, HTTP/2 and HTTP/3 framing, WebSocket framing and permessage-deflate, forwarded-header trust, cache policy, trace context |
 | `AvianQUIC` | QUIC transport: packets, crypto, loss recovery, streams, the TLS 1.3 handshake |
@@ -26,9 +27,15 @@ flowchart BT
     QUIC --> HTTP
 ```
 
-Swift never imports an OpenSSL header. TLS sessions, contexts and keys are
-opaque handles behind functions in the shim. Every C function and type is named
-`av_`, and every macro `AV_`.
+Swift never imports a TLS header. Sessions, contexts and keys are opaque
+handles behind functions in the shim. Every C function and type is named `av_`,
+and every macro `AV_`.
+
+TLS is BoringSSL's; OpenSSL is still linked and still required for
+cryptography, ACME and QUIC's primitives. Building without
+`AVIAN_TLS_BORINGSSL` puts the record layer back on OpenSSL, which is the only
+way to compare the two and the only way to get kernel TLS, which BoringSSL
+does not have.
 
 ## Using it
 
@@ -61,8 +68,8 @@ if that matters to you.
 
 - Swift 6.1 or newer, in Swift 6 language mode.
 - Linux, or macOS 14 or newer.
-- OpenSSL 3 and zlib development files. brotli and zstd are loaded at run time
-  when present.
+- OpenSSL 3 and zlib development files. BoringSSL ships here and needs
+  nothing installed. brotli and zstd are loaded at run time when present.
 
 On macOS with Homebrew's OpenSSL:
 
