@@ -10,6 +10,42 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## Unreleased
+
+- The TLS record layer and handshake can be built against BoringSSL instead
+  of OpenSSL, by defining `AVIAN_TLS_BORINGSSL` and linking a BoringSSL whose
+  symbols carry swift-nio-ssl's `CNIOBoringSSL` prefix:
+
+  ```
+  swift build -c release \
+      -Xcc -DAVIAN_TLS_BORINGSSL -Xcc -I<CNIOBoringSSL/include> \
+      -Xlinker <libCNIOBoringSSL.a>
+  ```
+
+  That symbol prefix is what makes this a choice one file can make:
+  `avian_crypto.c` and `avian_acme.c` go on calling OpenSSL, under its own
+  unprefixed symbols, in the same binary. So the switch moves the record
+  layer and the handshake and nothing else -- not JWT, not ACME's own client,
+  not QUIC's primitives.
+
+  The reason to want it is cost. Measured on one pinned core, the same source
+  compiled against each library: a handshake **752.6 us against 447.7**, and
+  a small record round trip, less the socketpair floor both pay, **5.19 us
+  against 3.66**. BoringSSL never adopted OpenSSL 3.x's provider
+  architecture, so it has none of the EVP object churn profiling finds in the
+  handshake here.
+
+  What it gives up is kernel TLS, which BoringSSL does not have. Every use of
+  it was already behind `SSL_OP_ENABLE_KTLS`, which BoringSSL does not
+  define, so it compiles out on its own: `av_tls_ktls_send`,
+  `av_tls_ktls_recv` and `av_tls_release_to_kernel` answer 0, and
+  `av_tls_sendfile` encrypts in process.
+- The ACME `tls-alpn-01` ClientHello callback is written once and adapted to
+  each library rather than assuming OpenSSL's shape. OpenSSL passes the `SSL`
+  and an argument of the caller's choosing; BoringSSL passes an
+  `SSL_CLIENT_HELLO` and no argument, so the context carries the wrapper
+  itself. Nothing changes under OpenSSL.
+
 ## 0.6.7 — 2026-09-20
 
 - The TLS error queue is cleared on the way out of a failure rather than on

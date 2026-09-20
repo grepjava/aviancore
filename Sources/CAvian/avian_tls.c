@@ -111,9 +111,32 @@ void av_tls_shutdown(av_tls *tls) { (void)tls; }
 #include <stdio.h>
 #include <strings.h>
 #include <arpa/inet.h>
+
+/* AVIAN_TLS_BORINGSSL builds the record layer and the handshake against
+ * BoringSSL instead of OpenSSL, for the reason BENCHMARKS.md records: it
+ * spends much less on a handshake and on a small record, having never adopted
+ * OpenSSL 3.x's provider architecture and so none of the EVP object churn
+ * that profiling finds here.
+ *
+ * The BoringSSL meant is swift-nio-ssl's vendored copy, whose symbols carry a
+ * CNIOBoringSSL prefix. That prefix is what makes this a choice one file can
+ * make: avian_crypto.c and avian_acme.c go on calling OpenSSL, under its own
+ * unprefixed symbols, in the same binary. So this moves the TLS record layer
+ * and nothing else.
+ *
+ * What it gives up is kernel TLS, which BoringSSL does not have. Every use of
+ * it here is already behind SSL_OP_ENABLE_KTLS, which BoringSSL does not
+ * define, so it compiles out on its own -- and kTLS measures as a regression
+ * on hardware without NIC offload anyway. */
+#ifdef AVIAN_TLS_BORINGSSL
+#include "CNIOBoringSSL_ssl.h"
+#include "CNIOBoringSSL_err.h"
+#include "CNIOBoringSSL_x509v3.h"
+#else
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
+#endif
 
 /* One certificate, with the names it is valid for.
  *
@@ -450,27 +473,26 @@ static int sni_host(const unsigned char *ext, size_t len, char *out, size_t cap)
     return out[0] != '.';
 }
 
-static int acme_client_hello(SSL *ssl, int *alert, void *arg) {
-    (void)alert;
-    struct av_tls_ctx *wrapper = (struct av_tls_ctx *)arg;
-    if (!wrapper->acme_dir) return SSL_CLIENT_HELLO_SUCCESS;
-
-    const unsigned char *ext;
-    size_t len;
-    if (!SSL_client_hello_get0_ext(ssl, TLSEXT_TYPE_application_layer_protocol_negotiation,
-                                   &ext, &len)
-        || !offers_acme(ext, len)) {
-        return SSL_CLIENT_HELLO_SUCCESS;
-    }
+/* The tls-alpn-01 decision itself. The two libraries hand a ClientHello
+ * callback different things -- OpenSSL an SSL and an argument of the caller's
+ * choosing, BoringSSL an SSL_CLIENT_HELLO and no argument at all -- but what
+ * is decided is the same, so it is written once here and each callback below
+ * only adapts its own shape to it.
+ *
+ * `alpn` and `sni` are the extension bodies, or NULL where the ClientHello
+ * did not carry them. */
+static void acme_pick(SSL *ssl, struct av_tls_ctx *wrapper,
+                      const unsigned char *alpn, size_t alpn_len,
+                      const unsigned char *sni, size_t sni_len) {
+    if (!wrapper || !wrapper->acme_dir) return;
+    if (!alpn || !offers_acme(alpn, alpn_len)) return;
     char host[256];
-    if (!SSL_client_hello_get0_ext(ssl, TLSEXT_TYPE_server_name, &ext, &len)
-        || !sni_host(ext, len, host, sizeof host)) {
-        return SSL_CLIENT_HELLO_SUCCESS;
-    }
+    if (!sni || !sni_host(sni, sni_len, host, sizeof host)) return;
+
     char cert[4200], key[4200];
     if (snprintf(cert, sizeof cert, "%s/alpn/%s.crt", wrapper->acme_dir, host) >= (int)sizeof cert
         || snprintf(key, sizeof key, "%s/alpn/%s.key", wrapper->acme_dir, host) >= (int)sizeof key) {
-        return SSL_CLIENT_HELLO_SUCCESS;
+        return;
     }
     /* No challenge pending for that name is not an error here: the handshake
      * carries on as usual, and a client that offered nothing but acme-tls/1
@@ -478,23 +500,79 @@ static int acme_client_hello(SSL *ssl, int *alert, void *arg) {
     if (SSL_use_certificate_file(ssl, cert, SSL_FILETYPE_PEM) != 1
         || SSL_use_PrivateKey_file(ssl, key, SSL_FILETYPE_PEM) != 1) {
         ERR_clear_error();
-        return SSL_CLIENT_HELLO_SUCCESS;
+        return;
     }
     SSL_set_ex_data(ssl, acme_ex_index, (void *)1);
+}
+
+#ifdef AVIAN_TLS_BORINGSSL
+
+/* BoringSSL's callback carries no argument of its own, so the wrapper rides
+ * on the context and is fetched back out here. */
+static int acme_ctx_index = -1;
+static pthread_once_t acme_ctx_index_once = PTHREAD_ONCE_INIT;
+
+static void make_acme_ctx_index(void) {
+    acme_ctx_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+}
+
+static enum ssl_select_cert_result_t acme_client_hello(const SSL_CLIENT_HELLO *hello) {
+    const unsigned char *alpn = NULL, *sni = NULL;
+    size_t alpn_len = 0, sni_len = 0;
+    if (!SSL_early_callback_ctx_extension_get(
+            hello, TLSEXT_TYPE_application_layer_protocol_negotiation, &alpn, &alpn_len)) {
+        alpn = NULL;
+    }
+    if (!SSL_early_callback_ctx_extension_get(hello, TLSEXT_TYPE_server_name, &sni, &sni_len)) {
+        sni = NULL;
+    }
+    struct av_tls_ctx *wrapper =
+        acme_ctx_index < 0 ? NULL
+                           : (struct av_tls_ctx *)SSL_CTX_get_ex_data(
+                                 SSL_get_SSL_CTX(hello->ssl), acme_ctx_index);
+    acme_pick(hello->ssl, wrapper, alpn, alpn_len, sni, sni_len);
+    return ssl_select_cert_success;
+}
+
+#else
+
+static int acme_client_hello(SSL *ssl, int *alert, void *arg) {
+    (void)alert;
+    const unsigned char *alpn = NULL, *sni = NULL;
+    size_t alpn_len = 0, sni_len = 0;
+    if (!SSL_client_hello_get0_ext(ssl, TLSEXT_TYPE_application_layer_protocol_negotiation,
+                                   &alpn, &alpn_len)) {
+        alpn = NULL;
+    }
+    if (!SSL_client_hello_get0_ext(ssl, TLSEXT_TYPE_server_name, &sni, &sni_len)) {
+        sni = NULL;
+    }
+    acme_pick(ssl, (struct av_tls_ctx *)arg, alpn, alpn_len, sni, sni_len);
     return SSL_CLIENT_HELLO_SUCCESS;
 }
+
+#endif
 
 int av_tls_ctx_set_acme_dir(av_tls_ctx *wrapper, const char *dir) {
     if (!wrapper || !dir) return -1;
     pthread_once(&acme_index_once, make_acme_index);
     if (acme_ex_index < 0) return -1;
+#ifdef AVIAN_TLS_BORINGSSL
+    pthread_once(&acme_ctx_index_once, make_acme_ctx_index);
+    if (acme_ctx_index < 0) return -1;
+#endif
     char *copy = strdup(dir);
     if (!copy) return -1;
     free(wrapper->acme_dir);
     wrapper->acme_dir = copy;
     /* On the context every connection starts on: the ClientHello callback
      * runs before SNI could move a connection to another one. */
+#ifdef AVIAN_TLS_BORINGSSL
+    SSL_CTX_set_ex_data(wrapper->ctx, acme_ctx_index, wrapper);
+    SSL_CTX_set_select_certificate_cb(wrapper->ctx, acme_client_hello);
+#else
     SSL_CTX_set_client_hello_cb(wrapper->ctx, acme_client_hello, wrapper);
+#endif
     return 0;
 }
 
