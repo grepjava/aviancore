@@ -1,0 +1,4 @@
+module CAvianSSL {
+    umbrella header "CAvianSSL.h"
+    export *
+}

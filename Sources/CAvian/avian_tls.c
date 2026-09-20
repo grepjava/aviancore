@@ -114,25 +114,31 @@ void av_tls_shutdown(av_tls *tls) { (void)tls; }
 #include <arpa/inet.h>
 
 /* AVIAN_TLS_BORINGSSL builds the record layer and the handshake against
- * BoringSSL instead of OpenSSL, for the reason BENCHMARKS.md records: it
- * spends much less on a handshake and on a small record, having never adopted
- * OpenSSL 3.x's provider architecture and so none of the EVP object churn
- * that profiling finds here.
+ * BoringSSL instead of OpenSSL, and Package.swift defines it: BoringSSL is
+ * what this package uses for TLS unless someone deliberately turns it off.
+ * It spends much less on a handshake and on a small record, never having
+ * adopted OpenSSL 3.x's provider architecture and so none of the EVP object
+ * churn profiling finds there.
  *
- * The BoringSSL meant is swift-nio-ssl's vendored copy, whose symbols carry a
- * CNIOBoringSSL prefix. That prefix is what makes this a choice one file can
- * make: avian_crypto.c and avian_acme.c go on calling OpenSSL, under its own
- * unprefixed symbols, in the same binary. So this moves the TLS record layer
- * and nothing else.
+ * The BoringSSL is the copy vendored at Sources/CAvianSSL, whose symbols
+ * carry a CAvianSSL prefix. That prefix is what makes this a choice one file
+ * can make: avian_crypto.c and avian_acme.c go on calling OpenSSL, under its
+ * own unprefixed symbols, in the same binary. So this moves the TLS record
+ * layer and nothing else -- not JWT, not ACME's own client, not QUIC's
+ * primitives, which use APIs BoringSSL has no equivalent for.
  *
- * What it gives up is kernel TLS, which BoringSSL does not have. Every use of
+ * Building without it falls back to OpenSSL for TLS as well, which is worth
+ * keeping working: it is the only way to compare the two, and the only way to
+ * build where the vendored copy will not.
+ *
+ * What BoringSSL gives up is kernel TLS, which it does not have. Every use of
  * it here is already behind SSL_OP_ENABLE_KTLS, which BoringSSL does not
  * define, so it compiles out on its own -- and kTLS measures as a regression
  * on hardware without NIC offload anyway. */
 #ifdef AVIAN_TLS_BORINGSSL
-#include "CNIOBoringSSL_ssl.h"
-#include "CNIOBoringSSL_err.h"
-#include "CNIOBoringSSL_x509v3.h"
+#include "CAvianSSL_ssl.h"
+#include "CAvianSSL_err.h"
+#include "CAvianSSL_x509v3.h"
 #else
 #include <openssl/ssl.h>
 #include <openssl/err.h>

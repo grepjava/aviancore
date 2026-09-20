@@ -19,6 +19,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "CAvian", targets: ["CAvian"]),
+        .library(name: "CAvianSSL", targets: ["CAvianSSL"]),
         .library(name: "AvianCore", targets: ["AvianCore"]),
         .library(name: "AvianHTTP", targets: ["AvianHTTP"]),
         .library(name: "AvianQUIC", targets: ["AvianQUIC"]),
@@ -28,14 +29,46 @@ let package = Package(
         // TLS, compression, caches. Feature-test macros are set inside the .c
         // files, never here: a define that reaches the module build would change
         // glibc struct layouts relative to SwiftGlibc.
+        // BoringSSL, vendored. Sources/CAvianSSL/VENDORING.md says where it
+        // came from, why its symbols are prefixed CAvianSSL rather than
+        // swift-nio-ssl's CNIOBoringSSL, and how to take a new release.
+        .target(
+            name: "CAvianSSL",
+            cSettings: [
+                .define("_GNU_SOURCE"),
+                .define("_POSIX_C_SOURCE", to: "200112L"),
+                .define("_DARWIN_C_SOURCE"),
+                // Recent Windows SDKs pull in headers whose symbols collide
+                // with BoringSSL's: the legacy <winsock.h>, the min()/max()
+                // macros, and <wincrypt.h>. Suppress just those.
+                .define("_WINSOCKAPI_", .when(platforms: [.windows])),
+                .define("NOMINMAX", .when(platforms: [.windows])),
+                .define("NOCRYPT", .when(platforms: [.windows])),
+            ],
+            cxxSettings: [
+                .define("_WINSOCKAPI_", .when(platforms: [.windows])),
+                .define("NOMINMAX", .when(platforms: [.windows])),
+                .define("NOCRYPT", .when(platforms: [.windows])),
+            ]
+        ),
+
         .target(
             name: "CAvian",
+            dependencies: ["CAvianSSL"],
             cSettings: [
                 .headerSearchPath("include"),
+                // The TLS record layer and the handshake are BoringSSL's: it
+                // spends much less on a handshake and on a small record,
+                // never having adopted OpenSSL 3.x's provider architecture.
+                // Everything else that wants a primitive -- avian_crypto.c,
+                // avian_acme.c, QUIC -- goes on calling OpenSSL, which is
+                // possible in one binary only because BoringSSL's symbols
+                // carry a prefix where OpenSSL's do not.
+                .define("AVIAN_TLS_BORINGSSL"),
             ],
-            // OpenSSL supplies the primitives and the handshake; the protocol
-            // state above it is ours. gzip links; brotli and zstd are opened
-            // at run time, so a machine without them still runs.
+            // OpenSSL still supplies the primitives BoringSSL has no
+            // equivalent for. gzip links; brotli and zstd are opened at run
+            // time, so a machine without them still runs.
             linkerSettings: [
                 .linkedLibrary("ssl"),
                 .linkedLibrary("crypto"),
@@ -59,5 +92,7 @@ let package = Package(
                     dependencies: ["CAvian", "AvianCore", "AvianHTTP", "AvianQUIC"],
                     swiftSettings: swiftSettings),
     ],
-    cLanguageStandard: .gnu11
+    cLanguageStandard: .gnu11,
+    // BoringSSL is C++.
+    cxxLanguageStandard: .cxx17
 )
