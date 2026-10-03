@@ -98,10 +98,30 @@ public final class LoopExecutor: TaskExecutor, @unchecked Sendable {
     /// Runs queued jobs, and the jobs they queue, until none is left. The
     /// owner's thread only. Called from inside a job it returns at once: the
     /// drain already running picks up whatever that job adds.
+    ///
+    /// A task that keeps queueing itself -- one calling `Task.yield()` in a
+    /// loop -- keeps this from returning for as long as it does. A loop that
+    /// has timers and sockets of its own to see to wants `drain(budget:)`.
     public func drain() {
-        if draining { return }
+        _ = drain(budget: .max)
+    }
+
+    /// Runs queued jobs, and the jobs they queue, until none is left or
+    /// `budget` of them have run, and says whether any are still waiting. A
+    /// loop that gets true back has work it must not sleep on: it should poll
+    /// without blocking and drain again on its next turn. The owner's thread
+    /// only. Called from inside a job it returns at once, with false: the
+    /// drain already running picks up whatever that job adds.
+    ///
+    /// Jobs run in the order they were queued, and a job queued by one that
+    /// ran goes to the back, so a task that yields over and over takes its
+    /// turn behind the others rather than ahead of them.
+    @discardableResult
+    public func drain(budget: Int) -> Bool {
+        if draining { return false }
         draining = true
-        while true {
+        var left = budget
+        while left > 0 {
             if count == 0 {
                 // Including what arrived while this drain was running: a job
                 // handed over by the thread that resumed a task here is
@@ -112,9 +132,11 @@ public final class LoopExecutor: TaskExecutor, @unchecked Sendable {
             let job = (jobs + head).move()
             head = (head &+ 1) & (capacity &- 1)
             count -= 1
+            left -= 1
             job.runSynchronously(on: asUnownedTaskExecutor())
         }
         draining = false
+        return hasWork
     }
 
     /// Empties the wake pipe. Call it before draining, so that a byte

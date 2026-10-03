@@ -10,8 +10,17 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
-## Unreleased
+## 0.7.2 — 2026-10-03
 
+- **`LoopExecutor.drain(budget:)` runs at most `budget` jobs and says whether
+  any are left.** `drain()` runs until the queue is empty, which a task that
+  keeps queueing itself -- one calling `Task.yield()` in a loop -- never lets
+  it be, so the loop's timers and sockets wait for as long as the task
+  keeps yielding. A loop that drains with a budget gets control back, and
+  when the call returns true it should poll without blocking and drain again
+  on its next turn. Jobs still run in the order they were queued, so a task
+  that requeues itself takes its turn behind the others. `drain()` is
+  unchanged.
 - `AVIAN_NO_GREEDY=1` in the environment puts the TLS record layer back on a
   plain socket BIO, giving up the read-ahead and returning to two reads a
   record. It exists so the greedy BIO can be measured against itself in one
