@@ -10,7 +10,7 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
-## Unreleased
+## 0.7.3 — 2026-10-10
 
 - **`LoopExecutor` can time its jobs.** Set `slowJobMicros` and a drain
   reports each job that ran at least that long to `onSlowJob`, with how long
