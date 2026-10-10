@@ -10,6 +10,14 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## Unreleased
+
+- **`LoopExecutor` can time its jobs.** Set `slowJobMicros` and a drain
+  reports each job that ran at least that long to `onSlowJob`, with how long
+  it ran and the job's address. For a task that is the address
+  `LoopExecutor.address(of:)` gives for it, so a loop can tell which of its
+  tasks held it up. Off by default, when a drain costs what it did.
+
 ## 0.7.2 — 2026-10-03
 
 - **`LoopExecutor.drain(budget:)` runs at most `budget` jobs and says whether

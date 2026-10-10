@@ -1,7 +1,8 @@
 //===----------------------------------------------------------------------===//
 // LoopExecutor: jobs run only when the loop drains, in order, on the owner's
 // thread; a job from another thread is handed over and wakes the pipe; a
-// budgeted drain stops at its budget however many jobs the jobs queue.
+// budgeted drain stops at its budget however many jobs the jobs queue; a
+// timed drain reports the jobs that ran long, by their task's address.
 //===----------------------------------------------------------------------===//
 
 import Testing
@@ -14,6 +15,14 @@ private final class Trail: @unchecked Sendable {
     var steps: [Int] = []
     var threads: [UnsafeMutableRawPointer?] = []
     var parked: UnsafeContinuation<Int, Never>? = nil
+    var addresses: [UnsafeRawPointer] = []
+    var slow: [(address: UnsafeRawPointer, micros: UInt64)] = []
+}
+
+/// Runs on the calling thread, without waiting, for `micros`.
+private func spin(_ micros: UInt64) {
+    let until = av_monotonic_us() &+ micros
+    while av_monotonic_us() < until {}
 }
 
 /// Queues a task on `executor` that records `step` and queues the next, up to
@@ -197,5 +206,52 @@ private func chain(_ step: Int, upTo last: Int, on executor: LoopExecutor, _ tra
         }
         #expect(Set(trail.steps) == [1, 2])
         #expect(!executor.hasWork)
+    }
+
+    @available(macOS 15, *)
+    @Test func aTimedDrainReportsTheJobsThatRanLongByTheirTask() {
+        let owner = UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
+        defer { owner.deallocate() }
+        let executor = LoopExecutor(owner: owner)
+        let trail = Trail()
+        executor.slowJobMicros = 5_000
+        executor.onSlowJob = { address, micros in trail.slow.append((address, micros)) }
+        asOwner(owner) {
+            // One quick, one slow, and one slow only after it has waited.
+            Task(executorPreference: executor) {
+                withUnsafeCurrentTask { trail.addresses.append(LoopExecutor.address(of: $0!)) }
+            }
+            Task(executorPreference: executor) {
+                withUnsafeCurrentTask { trail.addresses.append(LoopExecutor.address(of: $0!)) }
+                spin(20_000)
+            }
+            Task(executorPreference: executor) {
+                withUnsafeCurrentTask { trail.addresses.append(LoopExecutor.address(of: $0!)) }
+                _ = await withUnsafeContinuation { trail.parked = $0 }
+                spin(20_000)
+            }
+            executor.drain()
+            #expect(trail.addresses.count == 3)
+            #expect(trail.slow.map(\.address) == [trail.addresses[1]])
+            #expect(trail.slow.allSatisfy { $0.micros >= 20_000 })
+            // Its resumption is a job of the same task, at the same address.
+            trail.parked?.resume(returning: 0)
+            executor.drain()
+        }
+        #expect(trail.slow.map(\.address) == [trail.addresses[1], trail.addresses[2]])
+    }
+
+    @available(macOS 15, *)
+    @Test func anUntimedDrainReportsNothing() {
+        let owner = UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
+        defer { owner.deallocate() }
+        let executor = LoopExecutor(owner: owner)
+        let trail = Trail()
+        executor.onSlowJob = { address, micros in trail.slow.append((address, micros)) }
+        asOwner(owner) {
+            Task(executorPreference: executor) { spin(10_000) }
+            executor.drain()
+        }
+        #expect(trail.slow.isEmpty)
     }
 }

@@ -16,6 +16,12 @@
 //
 // The owner is whatever `av_worker_set_current` was given on the loop's
 // thread. Nothing else about it is used.
+//
+// Everything else on the loop waits while a job runs, so a job that runs long
+// without waiting -- a task doing CPU work inline -- holds up every socket
+// and timer the loop has. Set `slowJobMicros` and a drain times each job and
+// tells `onSlowJob` about those that ran past it, by the job's address: for a
+// task, the task's own (`address(of:)`), so the loop can say whose it was.
 //===----------------------------------------------------------------------===//
 
 import CAvian
@@ -46,6 +52,25 @@ public final class LoopExecutor: TaskExecutor, @unchecked Sendable {
     /// then waits for the loop's next turn rather than cutting it short.
     public let wakeFD: Int32
     private let wakeWriteFD: Int32
+
+    /// A job that runs at least this many microseconds is reported to
+    /// `onSlowJob`. 0, the default, times nothing: a drain then pays one
+    /// branch per job. Set on the owner's thread.
+    public var slowJobMicros: UInt64 = 0
+    /// Called on the owner's thread, after a job that ran at least
+    /// `slowJobMicros`, with the job's address and how long it ran in
+    /// microseconds. A task's job has the task's own address, the one
+    /// `address(of:)` gives for it, and the task may have ended by now: the
+    /// address is something to look up, never to follow.
+    public var onSlowJob: ((UnsafeRawPointer, UInt64) -> Void)? = nil
+
+    /// The address a job of `task` has when it is run here, to recognise it
+    /// by in `onSlowJob`.
+    public static func address(of task: UnsafeCurrentTask) -> UnsafeRawPointer {
+        // A task is the job that runs it: the runtime enqueues the task
+        // itself, and both types are a single reference to it.
+        unsafeBitCast(task, to: UnsafeRawPointer.self)
+    }
 
     /// `owner` is the value `av_worker_current()` returns on the loop's
     /// thread. `capacity` is where the ring starts; it grows while jobs are
@@ -133,10 +158,23 @@ public final class LoopExecutor: TaskExecutor, @unchecked Sendable {
             head = (head &+ 1) & (capacity &- 1)
             count -= 1
             left -= 1
-            job.runSynchronously(on: asUnownedTaskExecutor())
+            if slowJobMicros == 0 {
+                job.runSynchronously(on: asUnownedTaskExecutor())
+            } else {
+                runTimed(job)
+            }
         }
         draining = false
         return hasWork
+    }
+
+    /// Runs a job, and reports it if it ran past `slowJobMicros`.
+    private func runTimed(_ job: UnownedJob) {
+        let address = unsafeBitCast(job, to: UnsafeRawPointer.self)
+        let started = av_monotonic_us()
+        job.runSynchronously(on: asUnownedTaskExecutor())
+        let ran = av_monotonic_us() &- started
+        if ran >= slowJobMicros { onSlowJob?(address, ran) }
     }
 
     /// Empties the wake pipe. Call it before draining, so that a byte
