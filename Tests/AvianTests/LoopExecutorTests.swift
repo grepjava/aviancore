@@ -214,7 +214,7 @@ private func chain(_ step: Int, upTo last: Int, on executor: LoopExecutor, _ tra
         defer { owner.deallocate() }
         let executor = LoopExecutor(owner: owner)
         let trail = Trail()
-        executor.slowJobMicros = 5_000
+        executor.slowJobMicros = 25_000
         executor.onSlowJob = { address, micros in trail.slow.append((address, micros)) }
         asOwner(owner) {
             // One quick, one slow, and one slow only after it has waited.
@@ -223,17 +223,17 @@ private func chain(_ step: Int, upTo last: Int, on executor: LoopExecutor, _ tra
             }
             Task(executorPreference: executor) {
                 withUnsafeCurrentTask { trail.addresses.append(LoopExecutor.address(of: $0!)) }
-                spin(20_000)
+                spin(60_000)
             }
             Task(executorPreference: executor) {
                 withUnsafeCurrentTask { trail.addresses.append(LoopExecutor.address(of: $0!)) }
                 _ = await withUnsafeContinuation { trail.parked = $0 }
-                spin(20_000)
+                spin(60_000)
             }
             executor.drain()
             #expect(trail.addresses.count == 3)
             #expect(trail.slow.map(\.address) == [trail.addresses[1]])
-            #expect(trail.slow.allSatisfy { $0.micros >= 20_000 })
+            #expect(trail.slow.allSatisfy { $0.micros >= 60_000 })
             // Its resumption is a job of the same task, at the same address.
             trail.parked?.resume(returning: 0)
             executor.drain()
