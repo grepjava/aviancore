@@ -8,6 +8,13 @@
 
 import CAvian
 
+/// A socket as aviancore's C layer takes it: an `Int32` file descriptor on
+/// Linux and Darwin, a pointer-sized `SOCKET` on Windows.
+public typealias AvianSocket = av_sock
+/// A readiness poller: an epoll or kqueue descriptor, or wepoll's `HANDLE` on
+/// Windows.
+public typealias AvianPollHandle = av_poll_t
+
 public struct PollMask: OptionSet, Sendable {
     public let rawValue: UInt32
     @inlinable public init(rawValue: UInt32) { self.rawValue = rawValue }
@@ -23,13 +30,13 @@ public struct PollMask: OptionSet, Sendable {
 }
 
 public struct Poller {
-    public let fd: Int32
+    public let fd: AvianPollHandle
     @usableFromInline let events: UnsafeMutablePointer<av_event>
     @usableFromInline let maxEvents: Int32
 
     public init?(maxEvents: Int = 256) {
         let f = av_poll_create()
-        if f < 0 { return nil }
+        if av_poll_ok(f) == 0 { return nil }
         self.fd = f
         self.maxEvents = Int32(maxEvents)
         self.events = UnsafeMutablePointer<av_event>.allocate(capacity: maxEvents)
@@ -37,7 +44,7 @@ public struct Poller {
 
     @inlinable
     @discardableResult
-    public func add(_ target: Int32, _ mask: PollMask, token: UInt64) -> Bool {
+    public func add(_ target: AvianSocket, _ mask: PollMask, token: UInt64) -> Bool {
         av_poll_add(fd, target, mask.rawValue, token) == 0
     }
 
@@ -46,19 +53,19 @@ public struct Poller {
     /// and added again, never modified. See `av_poll_add_exclusive`.
     @inlinable
     @discardableResult
-    public func addExclusive(_ target: Int32, _ mask: PollMask, token: UInt64) -> Bool {
+    public func addExclusive(_ target: AvianSocket, _ mask: PollMask, token: UInt64) -> Bool {
         av_poll_add_exclusive(fd, target, mask.rawValue, token) == 0
     }
 
     @inlinable
     @discardableResult
-    public func modify(_ target: Int32, _ mask: PollMask, token: UInt64) -> Bool {
+    public func modify(_ target: AvianSocket, _ mask: PollMask, token: UInt64) -> Bool {
         av_poll_mod(fd, target, mask.rawValue, token) == 0
     }
 
     @inlinable
     @discardableResult
-    public func remove(_ target: Int32, last: PollMask = [.read, .write]) -> Bool {
+    public func remove(_ target: AvianSocket, last: PollMask = [.read, .write]) -> Bool {
         av_poll_del(fd, target, last.rawValue) == 0
     }
 
@@ -77,6 +84,6 @@ public struct Poller {
 
     public func destroy() {
         events.deallocate()
-        _ = av_close(fd)
+        _ = av_poll_close(fd)
     }
 }

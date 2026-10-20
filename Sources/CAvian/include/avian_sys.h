@@ -3,8 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <sys/types.h>
-#include <sys/uio.h>
+#include "avian_platform.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,18 +33,20 @@ typedef struct {
     uint32_t _pad;
 } av_event;
 
-int  av_poll_create(void);
-int  av_poll_add(int pfd, int fd, uint32_t mask, uint64_t token);
-int  av_poll_mod(int pfd, int fd, uint32_t mask, uint64_t token);
-int  av_poll_del(int pfd, int fd, uint32_t last_mask);
+av_poll_t av_poll_create(void);
+int  av_poll_add(av_poll_t pfd, av_sock fd, uint32_t mask, uint64_t token);
+int  av_poll_mod(av_poll_t pfd, av_sock fd, uint32_t mask, uint64_t token);
+int  av_poll_del(av_poll_t pfd, av_sock fd, uint32_t last_mask);
 /* Adds a descriptor that several pollers watch -- a listener every worker
  * shares -- so that the kernel wakes one waiting poller for it rather than all
  * of them (EPOLLEXCLUSIVE). Only an idle worker is waiting, so a connection
  * goes to a worker with time for it. It cannot be modified afterwards, only
  * removed and added again. On kqueue this is a plain add. */
-int  av_poll_add_exclusive(int pfd, int fd, uint32_t mask, uint64_t token);
+int  av_poll_add_exclusive(av_poll_t pfd, av_sock fd, uint32_t mask, uint64_t token);
 /* Returns number of events, or -1 with errno (EINTR is reported as 0). */
-int  av_poll_wait(int pfd, av_event *out, int max_events, int timeout_ms);
+int  av_poll_wait(av_poll_t pfd, av_event *out, int max_events, int timeout_ms);
+/* Closes a poller from av_poll_create. */
+int  av_poll_close(av_poll_t pfd);
 
 /* ---------------------------------------------------------------------------
  * Sockets
@@ -56,30 +57,30 @@ int  av_poll_wait(int pfd, av_event *out, int max_events, int timeout_ms);
  * `reuseport` is set, carries SO_REUSEPORT so N worker processes can each own
  * an independent accept queue -- this is what removes the thundering herd and
  * the shared-accept-lock from the multi-process story. */
-int av_listen_tcp(const char *host, uint16_t port, int backlog, int reuseport, int v6only);
+av_sock av_listen_tcp(const char *host, uint16_t port, int backlog, int reuseport, int v6only);
 /* A unix socket cannot be opened twice: binding requires the path to be free,
  * so `unlink_existing` removes a stale one. With several workers the listener
  * is therefore created once by the supervisor and inherited across fork --
  * letting each worker bind for itself would have every worker unlink and
  * replace the socket the previous one just published. */
-int av_listen_unix(const char *path, int backlog, int unlink_existing);
+av_sock av_listen_unix(const char *path, int backlog, int unlink_existing);
 
 /* accept4() where available, accept()+fcntl() elsewhere. Fills `peer` with a
  * printable address and `peer_port`. Returns fd, or -1 with errno. */
-int av_accept(int lfd, char *peer, size_t peer_len, uint16_t *peer_port);
+av_sock av_accept(av_sock lfd, char *peer, size_t peer_len, uint16_t *peer_port);
 
 /* Handing a connection to another worker process. A datagram unix socket pair,
  * non-blocking and close-on-exec: each message is one descriptor, passed with
  * SCM_RIGHTS, and a few bytes saying what the sender knew about it. Datagrams
  * keep the two together, and a descriptor in flight belongs to the socket, not
  * to either process, so it survives the receiver being replaced. */
-int av_handoff_pair(int fds[2]);
+int av_handoff_pair(av_sock fds[2]);
 /* Sends `fd` with `meta`. Bytes sent, or -1 with errno (EAGAIN when the
  * receiver is behind). The caller still owns and must close its own copy. */
-long av_send_fd(int chan, int fd, const void *meta, size_t meta_len);
+long av_send_fd(av_sock chan, av_sock fd, const void *meta, size_t meta_len);
 /* Receives one message: its bytes into `meta`, the descriptor into `*fd`, which
  * is -1 when none came. Bytes received, or -1 with errno. */
-long av_recv_fd(int chan, int *fd, void *meta, size_t cap);
+long av_recv_fd(av_sock chan, av_sock *fd, void *meta, size_t cap);
 
 /* Starts a TCP connection and returns at once. The socket is non-blocking and
  * close-on-exec, so the caller waits for writability and then asks
@@ -93,30 +94,35 @@ long av_recv_fd(int chan, int *fd, void *meta, size_t cap);
  * Returns fd with *in_progress set to 1 when the connection is still being
  * made -- the usual case -- or 0 when it completed immediately, which happens
  * on loopback. Returns -1 with errno on a real failure. */
-int av_connect_tcp(const char *host, uint16_t port, int *in_progress);
+av_sock av_connect_tcp(const char *host, uint16_t port, int *in_progress);
 
 /* The same for a unix socket, which also usually completes at once. */
-int av_connect_unix(const char *path, int *in_progress);
+av_sock av_connect_unix(const char *path, int *in_progress);
 
 /* SO_ERROR: 0 when the connection is up, otherwise the errno that stopped it.
  * A non-blocking connect reports its outcome here and nowhere else -- the
  * socket simply becomes writable either way. */
-int av_connect_error(int fd);
+int av_connect_error(av_sock fd);
 
-int av_set_nonblock(int fd);
-int av_set_nodelay(int fd, int on);
-int av_set_cloexec(int fd);
-int av_shutdown_write(int fd);
-int av_close(int fd);
+int av_set_nonblock(av_sock fd);
+int av_set_nodelay(av_sock fd, int on);
+int av_set_cloexec(av_sock fd);
+int av_shutdown_write(av_sock fd);
+int av_close(av_sock fd);
+/* Closes a file descriptor from av_static_open or av_open_read. The same as
+ * av_close on POSIX; on Windows a socket and a file are different handles. */
+int av_close_file(int fd);
+/* read(2) on such a file. */
+ssize_t av_read_file(int fd, void *buf, size_t n);
 
 /* Local address of a listening socket, for reporting which address a request arrived on. */
-int av_local_addr(int fd, char *host, size_t host_len, uint16_t *port);
+int av_local_addr(av_sock fd, char *host, size_t host_len, uint16_t *port);
 
-ssize_t av_read(int fd, void *buf, size_t n);
-ssize_t av_write(int fd, const void *buf, size_t n);
-ssize_t av_writev(int fd, const struct iovec *iov, int iovcnt);
+ssize_t av_read(av_sock fd, void *buf, size_t n);
+ssize_t av_write(av_sock fd, const void *buf, size_t n);
+ssize_t av_writev(av_sock fd, const struct iovec *iov, int iovcnt);
 /* Portable sendfile(); advances *offset. Returns bytes sent or -1. */
-ssize_t av_sendfile(int out_fd, int in_fd, off_t *offset, size_t count);
+ssize_t av_sendfile(av_sock out_fd, int in_fd, av_off_t *offset, size_t count);
 
 /* Opens a regular file under `root` for a static route, reporting its size and
  * modification time in nanoseconds since the epoch.
@@ -153,7 +159,7 @@ int av_open_read(const char *path);
  *
  * Returns the descriptor, or -1 with errno set; EINVAL means the host was not
  * an address literal. */
-int av_connect_udp(const char *host, uint16_t port);
+av_sock av_connect_udp(const char *host, uint16_t port);
 
 /* The port a socket is actually bound to, which for a bind to port 0 is the
  * one the kernel chose. Returns 0 on failure.
@@ -161,11 +167,11 @@ int av_connect_udp(const char *host, uint16_t port);
  * Without this a test that needs a server of its own has to pick a number and
  * hope nothing else on the machine holds it. The outbound tests avoided the
  * problem by using unix sockets; a nameserver cannot be one. */
-uint16_t av_local_port(int fd);
+uint16_t av_local_port(av_sock fd);
 
 /* poll(2) on a single descriptor, for a wait outside the readiness poller: the
  * supervisor checking whether a replacement worker has reported ready. */
-int av_poll_single(int fd, int for_write, int timeout_ms);
+int av_poll_single(av_sock fd, int for_write, int timeout_ms);
 
 int av_errno(void);
 void av_set_errno(int e);
@@ -189,12 +195,12 @@ uint64_t av_realtime_us(void);
  * socket, it is inherited by every connection accepted from it -- and it has
  * to be set there, before the connection exists, or the first request's
  * packets arrive with no timestamp to report. 0 on success. */
-int av_set_rx_timestamps(int fd);
+int av_set_rx_timestamps(av_sock fd);
 
 /* read() through recvmsg, also reporting when the kernel received the last
  * of the bytes returned, as wall-clock microseconds. `*arrived_us` is 0 when
  * the kernel recorded nothing (no timestamping, or a platform without it). */
-long av_read_stamped(int fd, void *buf, size_t n, uint64_t *arrived_us);
+long av_read_stamped(av_sock fd, void *buf, size_t n, uint64_t *arrived_us);
 /* IMF-fixdate, e.g. "Sun, 06 Nov 1994 08:49:37 GMT". Writes exactly 29 bytes,
  * no NUL. Returns 29. Hand-rolled: strftime() would pull in locale state. */
 int av_http_date(char *buf29, int64_t unix_seconds);
@@ -206,7 +212,7 @@ int64_t av_unix_seconds(void);
  * Signals are funnelled into a self-pipe so the readiness poller is the single
  * place the server ever blocks.
  * ------------------------------------------------------------------------- */
-int  av_signal_pipe_init(void);   /* returns readable fd, -1 on failure */
+av_sock av_signal_pipe_init(void);   /* returns the readable end, AV_BAD_SOCK on failure */
 /* fork() for a worker: signals are held across it, and the child gets a signal
  * pipe of its own before they are released, so none sent during start-up is
  * lost. */
@@ -260,8 +266,9 @@ int av_path_exists(const char *path);
 /* Modification time in nanoseconds, or -1. Used by --reload. */
 int64_t av_mtime_ns(const char *path);
 int av_is_dir(const char *path);
-/* Non-blocking, close-on-exec pipe. */
-int av_pipe(int fds[2]);
+/* Non-blocking, close-on-exec pipe. On Windows a connected loopback socket
+ * pair, because the poller there (wepoll) can only watch sockets. */
+int av_pipe(av_sock fds[2]);
 
 /* --reload, restarting the supervisor on a rebuilt executable. */
 /* The running executable's absolute path. 0, or -1 where it cannot be found. */
@@ -273,7 +280,7 @@ uint64_t av_file_signature(const char *path, int executable);
 /* Runs `path --version` with its output discarded, waiting up to timeout_ms.
  * 1 when it exited 0, which says the file is a whole executable that starts. */
 int av_probe_executable(const char *path, int timeout_ms);
-int av_clear_cloexec(int fd);
+int av_clear_cloexec(av_sock fd);
 /* execv. Returns only on failure, with errno set. */
 int av_execv(const char *path, char *const argv[]);
 /* Blocks, and unblocks, the signals the supervisor's pipe carries. The mask

@@ -1,6 +1,9 @@
 #define _GNU_SOURCE 1
 #include "avian_sys.h"
 
+/* POSIX. The Windows implementation of this header is avian_sys_win.c. */
+#if !defined(_WIN32)
+
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -196,6 +199,9 @@ int av_set_nodelay(int fd, int on) {
 
 int av_shutdown_write(int fd) { return shutdown(fd, SHUT_WR); }
 int av_close(int fd) { return close(fd); }
+int av_poll_close(int pfd) { return close(pfd); }
+int av_close_file(int fd) { return close(fd); }
+ssize_t av_read_file(int fd, void *buf, size_t n) { return read(fd, buf, n); }
 
 int av_listen_tcp(const char *host, uint16_t port, int backlog, int reuseport, int v6only) {
     char portbuf[8];
@@ -1027,3 +1033,5 @@ long av_raise_nofile_limit(void) {
     }
     return (long)rl.rlim_cur;
 }
+
+#endif /* !_WIN32 */

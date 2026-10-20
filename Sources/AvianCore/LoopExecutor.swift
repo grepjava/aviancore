@@ -48,10 +48,10 @@ public final class LoopExecutor: TaskExecutor, @unchecked Sendable {
     private let handedOver = Atomic<Bool>(false)
     /// The pipe that wakes a loop asleep in its poller: put the read end on
     /// the poller for reading, and call `clearWake` then `drain` when it
-    /// fires. -1 when the pipe could not be made: a job from another thread
+    /// fires. `av_bad_sock` when the pipe could not be made: a job from another thread
     /// then waits for the loop's next turn rather than cutting it short.
-    public let wakeFD: Int32
-    private let wakeWriteFD: Int32
+    public let wakeFD: AvianSocket
+    private let wakeWriteFD: AvianSocket
 
     /// A job that runs at least this many microseconds is reported to
     /// `onSlowJob`. 0, the default, times nothing: a drain then pays one
@@ -88,22 +88,22 @@ public final class LoopExecutor: TaskExecutor, @unchecked Sendable {
             preconditionFailure("no lock for a loop executor")
         }
         self.lock = lock
-        var fds: (Int32, Int32) = (-1, -1)
+        var fds: (AvianSocket, AvianSocket) = (av_bad_sock, av_bad_sock)
         let piped = withUnsafeMutableBytes(of: &fds) { raw in
-            av_pipe(raw.baseAddress!.assumingMemoryBound(to: Int32.self))
+            av_pipe(raw.baseAddress!.assumingMemoryBound(to: AvianSocket.self))
         }
-        if piped != 0 { fds = (-1, -1) }
+        if piped != 0 { fds = (av_bad_sock, av_bad_sock) }
         wakeFD = fds.0
         wakeWriteFD = fds.1
-        if wakeFD < 0 {
+        if av_sock_ok(wakeFD) == 0 {
             Log.error("no pipe for a loop executor: a task resumed off its loop's thread waits for the next turn of the loop")
         }
     }
 
     deinit {
         jobs.deallocate()
-        if wakeFD >= 0 { _ = av_close(wakeFD) }
-        if wakeWriteFD >= 0 { _ = av_close(wakeWriteFD) }
+        if av_sock_ok(wakeFD) != 0 { _ = av_close(wakeFD) }
+        if av_sock_ok(wakeWriteFD) != 0 { _ = av_close(wakeWriteFD) }
         av_mutex_free(lock)
     }
 
@@ -180,7 +180,7 @@ public final class LoopExecutor: TaskExecutor, @unchecked Sendable {
     /// Empties the wake pipe. Call it before draining, so that a byte
     /// arriving while the jobs run is not read away with them.
     public func clearWake() {
-        guard wakeFD >= 0 else { return }
+        guard av_sock_ok(wakeFD) != 0 else { return }
         var scratch = (UInt64(0), UInt64(0), UInt64(0), UInt64(0),
                        UInt64(0), UInt64(0), UInt64(0), UInt64(0))
         while withUnsafeMutableBytes(of: &scratch, {
@@ -204,7 +204,7 @@ public final class LoopExecutor: TaskExecutor, @unchecked Sendable {
         let first = intake.count == 1
         handedOver.store(true, ordering: .releasing)
         av_mutex_unlock(lock)
-        guard first, wakeWriteFD >= 0 else { return }
+        guard first, av_sock_ok(wakeWriteFD) != 0 else { return }
         var byte: UInt8 = 1
         _ = av_write(wakeWriteFD, &byte, 1)
     }
