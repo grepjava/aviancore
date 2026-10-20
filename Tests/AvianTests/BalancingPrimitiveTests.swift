@@ -4,6 +4,8 @@ import CAvian
 import Glibc
 #elseif canImport(Darwin)
 import Darwin
+#elseif canImport(ucrt)
+import ucrt
 #endif
 @testable import AvianCore
 
@@ -92,6 +94,9 @@ struct BalancingPrimitiveTests {
         #expect(av_load_snapshot(&views, 8, now) == 0)
     }
 
+    // Handing a socket to another worker process has no Windows form until
+    // the multi-process model has one: av_handoff_pair says ENOSYS there.
+    #if !os(Windows)
     @Test("a descriptor and its note arrive together, and the sender's copy is its own")
     func handoff() throws {
         var chan: (Int32, Int32) = (-1, -1)
@@ -129,11 +134,12 @@ struct BalancingPrimitiveTests {
         #expect(av_read(pipe.0, &back, 1) == 1)
         #expect(back == 42)
     }
+    #endif
 
     @Test("a listener can be watched exclusively by several pollers")
     func exclusiveListener() throws {
         let listener = av_listen_tcp("127.0.0.1", 0, 16, 0, 0)
-        try #require(listener >= 0)
+        try #require(av_sock_ok(listener) != 0)
         defer { _ = av_close(listener) }
         var port: UInt16 = 0
         _ = av_local_addr(listener, nil, 0, &port)
@@ -146,20 +152,20 @@ struct BalancingPrimitiveTests {
 
         var progress: Int32 = 0
         let client = av_connect_tcp("127.0.0.1", port, &progress)
-        try #require(client >= 0)
+        try #require(av_sock_ok(client) != 0)
         defer { _ = av_close(client) }
 
         // Whichever poller hears of it can accept it.
-        var accepted: Int32 = -1
-        for _ in 0..<100 where accepted < 0 {
+        var accepted = av_bad_sock
+        for _ in 0..<100 where av_sock_ok(accepted) == 0 {
             for poller in [a, b] where poller.wait(timeoutMillis: 10) > 0 {
                 #expect(poller.event(0).token == 7)
                 accepted = av_accept(listener, nil, 0, nil)
-                if accepted >= 0 { break }
+                if av_sock_ok(accepted) != 0 { break }
             }
         }
-        #expect(accepted >= 0)
-        if accepted >= 0 { _ = av_close(accepted) }
+        #expect(av_sock_ok(accepted) != 0)
+        if av_sock_ok(accepted) != 0 { _ = av_close(accepted) }
         // Removing and adding again is how it is re-armed.
         #expect(a.remove(listener, last: .read))
         #expect(a.addExclusive(listener, .read, token: 7))
@@ -169,7 +175,7 @@ struct BalancingPrimitiveTests {
         // The runner's thread, put back as it was afterwards.
         let before = av_sched_slice()
         let set = av_sched_set_slice(300_000)
-        let error = errno
+        let error = av_errno()
         let after = av_sched_slice()
         if before >= 0 { _ = av_sched_set_slice(UInt64(before)) }
         #if os(Linux)

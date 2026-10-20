@@ -5,11 +5,11 @@
 
 #include "avian_load.h"
 
+#include "avian_sys.h"
+
 #include <errno.h>
 #include <stdatomic.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #define AV_CACHE_LINE 64
 
@@ -36,9 +36,8 @@ int av_load_init(int slots) {
     if (g_slots) return 0;
     if (slots < 1) slots = 1;
     size_t bytes = sizeof(load_slot) * (size_t)slots;
-    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
-                   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) return -1;
+    void *p = av_shm_map(bytes);
+    if (!p) return -1;
     memset(p, 0, bytes);
     g_slots = (load_slot *)p;
     g_count = slots;
@@ -60,7 +59,7 @@ void av_load_join(int slot, int channel) {
     atomic_store_explicit(&s->conns, 0, memory_order_relaxed);
     atomic_store_explicit(&s->waiting_since, 0, memory_order_relaxed);
     atomic_store_explicit(&s->channel, channel, memory_order_relaxed);
-    atomic_store_explicit(&s->pid, (int32_t)getpid(), memory_order_relaxed);
+    atomic_store_explicit(&s->pid, (int32_t)av_getpid(), memory_order_relaxed);
     atomic_store_explicit(&s->accepting, 0, memory_order_relaxed);
     atomic_store_explicit(&s->wait_us, 0, memory_order_relaxed);
     atomic_store_explicit(&s->heavy, 0, memory_order_relaxed);

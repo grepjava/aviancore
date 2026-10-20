@@ -2,16 +2,22 @@
 #define _GNU_SOURCE
 
 #include "avian_acme.h"
+#include "avian_sys.h"
+#include "avian_compat.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/stat.h>
+#if defined(_WIN32)
+#include <direct.h>
+#include <io.h>
+#else
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 int av_acme_b64url(const uint8_t *in, size_t n, char *out, size_t cap) {
     static const char table[] =
@@ -41,21 +47,89 @@ int av_acme_b64url(const uint8_t *in, size_t n, char *out, size_t cap) {
     return (int)o;
 }
 
+#if defined(_WIN32)
+/* UTF-8 to UTF-16 for the W calls; NULL on failure, the caller frees. */
+static wchar_t *acme_wide(const char *s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
+    if (w) MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    return w;
+}
+
+/* rename(2) replaces its target; Windows' rename refuses to. */
+static int replace_file(const char *from, const char *to) {
+    wchar_t *wf = acme_wide(from), *wt = acme_wide(to);
+    BOOL ok = wf && wt && MoveFileExW(wf, wt, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    free(wf);
+    free(wt);
+    return ok ? 0 : -1;
+}
+#endif
+
 int av_acme_mkdirs(const char *path) {
     char buf[4096];
     size_t n = strlen(path);
     if (n == 0 || n >= sizeof buf) return -1;
     memcpy(buf, path, n + 1);
     for (size_t i = 1; i <= n; i++) {
+#if defined(_WIN32)
+        if (buf[i] == '/' || buf[i] == '\\' || buf[i] == 0) {
+            /* "C:" is a drive, not a directory to make. */
+            if (buf[i - 1] == ':') continue;
+            char saved = buf[i];
+            buf[i] = 0;
+            wchar_t *w = acme_wide(buf);
+            BOOL ok = w && (CreateDirectoryW(w, NULL) || GetLastError() == ERROR_ALREADY_EXISTS);
+            free(w);
+            if (!ok) return -1;
+            buf[i] = saved;
+        }
+#else
         if (buf[i] == '/' || buf[i] == 0) {
             char saved = buf[i];
             buf[i] = 0;
             if (mkdir(buf, 0700) != 0 && errno != EEXIST) return -1;
             buf[i] = saved;
         }
+#endif
     }
     return 0;
 }
+
+#if defined(_WIN32)
+/* A private key's protection on Windows is the directory's ACL, which a
+ * Unix mode cannot express; `mode` is not applied. The write is the same
+ * atomic one: a temporary file, flushed to disk, moved over the old. */
+int av_acme_write_file(const char *path, const uint8_t *data, size_t n, int mode) {
+    (void)mode;
+    char tmp[4200];
+    if (snprintf(tmp, sizeof tmp, "%s.tmp.%d", path, (int)av_getpid()) >= (int)sizeof tmp) return -1;
+    wchar_t *wtmp = acme_wide(tmp);
+    if (!wtmp) return -1;
+    int fd = _wopen(wtmp, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY | _O_NOINHERIT,
+                    _S_IREAD | _S_IWRITE);
+    if (fd < 0) { free(wtmp); return -1; }
+    size_t done = 0;
+    while (done < n) {
+        size_t chunk = n - done > 0x40000000 ? 0x40000000 : n - done;
+        int w = _write(fd, data + done, (unsigned)chunk);
+        if (w < 0) { _close(fd); _wunlink(wtmp); free(wtmp); return -1; }
+        done += (size_t)w;
+    }
+    if (_commit(fd) != 0 || _close(fd) != 0) { _wunlink(wtmp); free(wtmp); return -1; }
+    if (replace_file(tmp, path) != 0) { _wunlink(wtmp); free(wtmp); return -1; }
+    free(wtmp);
+    return 0;
+}
+
+int av_acme_rename(const char *from, const char *to) { return replace_file(from, to); }
+
+/* av_waitpid reports a Windows exit code the way POSIX encodes a normal exit,
+ * (code << 8). */
+int av_acme_exit_ok(int status) { return (status & 0x7f) == 0 && ((status >> 8) & 0xff) == 0; }
+
+#else
 
 int av_acme_write_file(const char *path, const uint8_t *data, size_t n, int mode) {
     char tmp[4200];
@@ -87,6 +161,8 @@ int av_acme_write_file(const char *path, const uint8_t *data, size_t n, int mode
 int av_acme_rename(const char *from, const char *to) { return rename(from, to); }
 
 int av_acme_exit_ok(int status) { return WIFEXITED(status) && WEXITSTATUS(status) == 0; }
+
+#endif
 
 #if defined(__has_include)
 #  if !__has_include(<openssl/ssl.h>)
@@ -130,10 +206,12 @@ void av_acme_resp_free(av_acme_resp *r) { (void)r; }
 
 #else
 
+#if !defined(_WIN32)
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
+#endif
 
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
@@ -562,6 +640,7 @@ av_acme_resp *av_acme_https(const char *method, const char *url,
     }
     const char *path = *rest ? rest : "/";
 
+    av_net_init();
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -571,25 +650,37 @@ av_acme_resp *av_acme_https(const char *method, const char *url,
         if (err && err_len) snprintf(err, err_len, "cannot resolve %s: %s", host, gai_strerror(gai));
         return NULL;
     }
-    int fd = -1;
+    av_sock fd = AV_BAD_SOCK;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-#ifdef SOCK_CLOEXEC
+#if defined(_WIN32)
+        fd = WSASocketW(ai->ai_family, ai->ai_socktype, ai->ai_protocol, NULL, 0,
+                        WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+        if (fd == INVALID_SOCKET) { fd = AV_BAD_SOCK; continue; }
+        DWORD timeout_ms = 30000;   /* SO_RCVTIMEO is milliseconds here */
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof timeout_ms);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout_ms, sizeof timeout_ms);
+        if (connect(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
+        closesocket(fd);
+        fd = AV_BAD_SOCK;
+#else
+#  if defined(SOCK_CLOEXEC)
         fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
         if (fd < 0) continue;
-#else
+#  else
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) continue;
         fcntl(fd, F_SETFD, FD_CLOEXEC);
-#endif
+#  endif
         struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
         if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
         close(fd);
         fd = -1;
+#endif
     }
     freeaddrinfo(res);
-    if (fd < 0) {
+    if (fd == AV_BAD_SOCK) {
         if (err && err_len) snprintf(err, err_len, "cannot connect to %s:%s", host, port);
         return NULL;
     }
@@ -609,7 +700,7 @@ av_acme_resp *av_acme_https(const char *method, const char *url,
         goto fail;
     }
     ssl = SSL_new(ctx);
-    if (!ssl || SSL_set_fd(ssl, fd) != 1) { set_error(err, err_len, "cannot start TLS"); goto fail; }
+    if (!ssl || SSL_set_fd(ssl, (int)fd) != 1) { set_error(err, err_len, "cannot start TLS"); goto fail; }
     {
         unsigned char ip[16];
         int literal = inet_pton(AF_INET, host, ip) == 1 || inet_pton(AF_INET6, host, ip) == 1;
@@ -718,7 +809,7 @@ av_acme_resp *av_acme_https(const char *method, const char *url,
     SSL_shutdown(ssl);
     SSL_free(ssl);
     SSL_CTX_free(ctx);
-    close(fd);
+    av_close(fd);
     return resp;
 
 fail:
@@ -726,7 +817,7 @@ fail:
     free(request);
     if (ssl) SSL_free(ssl);
     if (ctx) SSL_CTX_free(ctx);
-    close(fd);
+    av_close(fd);
     return NULL;
 }
 

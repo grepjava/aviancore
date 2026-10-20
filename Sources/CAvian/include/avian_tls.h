@@ -15,6 +15,8 @@
 
 #include <stddef.h>
 
+#include "avian_platform.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -63,9 +65,9 @@ av_tls_ctx *av_tls_client_ctx_new(const char *ca_file, const char *alpn,
  * Without the second, verification proves only that some CA somewhere signed
  * some certificate -- which is the quiet hole that makes TLS look like it is
  * working while it protects nothing. */
-av_tls *av_tls_client_new(av_tls_ctx *ctx, int fd, const char *hostname);
+av_tls *av_tls_client_new(av_tls_ctx *ctx, av_sock fd, const char *hostname);
 
-av_tls *av_tls_new(av_tls_ctx *ctx, int fd);
+av_tls *av_tls_new(av_tls_ctx *ctx, av_sock fd);
 void av_tls_free(av_tls *tls);
 
 /* Handshake progress: 1 done, 0 needs more input, -1 needs to write, -2 failed.
@@ -106,7 +108,7 @@ int av_tls_release_to_kernel(av_tls *tls);
 
 /* Sends close_notify on a connection whose TLS is the kernel's alone. 0, or
  * -1 with errno. */
-int av_ktls_close_notify(int fd);
+int av_ktls_close_notify(av_sock fd);
 
 /* SSL_sendfile: `n` bytes of `fd` starting at `offset`, encrypted by the
  * kernel. Shaped like av_tls_write. Only when av_tls_ktls_send says 1. */

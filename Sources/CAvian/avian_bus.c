@@ -2,17 +2,16 @@
 #define _GNU_SOURCE
 
 #include "avian_bus.h"
+#include "avian_sys.h"
 
 #include <errno.h>
-#include <fcntl.h>
-#include <sched.h>
-#include <signal.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <time.h>
+#if !defined(_WIN32)
+#include <fcntl.h>
 #include <unistd.h>
+#endif
 
 #ifdef __linux__
 #include <sys/eventfd.h>
@@ -65,9 +64,10 @@ static uint8_t *g_bytes = NULL;
 static struct index_entry *g_index = NULL;
 static struct wake_slot *g_slots = NULL;
 /* Per slot: the descriptor a wake is written to and the one it is read from.
- * The same eventfd for both on Linux. Inherited across the fork. */
-static int *g_write_fds = NULL;
-static int *g_read_fds = NULL;
+ * The same eventfd for both on Linux. Inherited across the fork. A loopback
+ * socket pair on Windows, where the poller watches sockets only. */
+static av_sock *g_write_fds = NULL;
+static av_sock *g_read_fds = NULL;
 static int64_t g_self = -1;
 
 #define RECORD_SIZE sizeof(struct record)
@@ -75,7 +75,7 @@ static int64_t g_self = -1;
 /* Room in the index for a message of this many bytes on average. */
 #define AVERAGE_RECORD 128
 
-#ifndef __linux__
+#if !defined(__linux__) && !defined(_WIN32)
 static void set_nonblocking_cloexec(int fd) {
     int flags = fcntl(fd, F_GETFL);
     if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -84,11 +84,7 @@ static void set_nonblocking_cloexec(int fd) {
 }
 #endif
 
-static uint64_t now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
-}
+static uint64_t now_us(void) { return av_realtime_us(); }
 
 int av_bus_init(uint64_t ring_bytes, uint32_t slots) {
     if (g_ring != NULL || slots == 0) return -1;
@@ -101,22 +97,27 @@ int av_bus_init(uint64_t ring_bytes, uint32_t slots) {
     size_t index = entries * sizeof(struct index_entry);
     size_t wake = slots * sizeof(struct wake_slot);
     size_t total = head + index + wake + capacity;
-    void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (map == MAP_FAILED) return -1;
+    void *map = av_shm_map(total);
+    if (map == NULL) return -1;
 
-    int *writes = calloc(slots, sizeof(int));
-    int *reads = calloc(slots, sizeof(int));
+    av_sock *writes = calloc(slots, sizeof(av_sock));
+    av_sock *reads = calloc(slots, sizeof(av_sock));
     if (writes == NULL || reads == NULL) {
         free(writes);
         free(reads);
-        munmap(map, total);
+        av_shm_unmap(map, total);
         return -1;
     }
     for (uint32_t i = 0; i < slots; i++) {
-#ifdef __linux__
+#if defined(__linux__)
         int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
         if (fd < 0) goto fail;
         writes[i] = reads[i] = fd;
+#elif defined(_WIN32)
+        av_sock pair[2];
+        if (av_pipe(pair) != 0) goto fail;
+        reads[i] = pair[0];
+        writes[i] = pair[1];
 #else
         int pair[2];
         if (pipe(pair) != 0) goto fail;
@@ -128,12 +129,12 @@ int av_bus_init(uint64_t ring_bytes, uint32_t slots) {
         continue;
     fail:
         for (uint32_t j = 0; j < i; j++) {
-            close(reads[j]);
-            if (writes[j] != reads[j]) close(writes[j]);
+            av_close(reads[j]);
+            if (writes[j] != reads[j]) av_close(writes[j]);
         }
         free(writes);
         free(reads);
-        munmap(map, total);
+        av_shm_unmap(map, total);
         return -1;
     }
 
@@ -166,8 +167,8 @@ uint32_t av_bus_max_message(void) {
     return g_ring ? g_ring->max_message : 0;
 }
 
-int av_bus_attach(uint32_t slot) {
-    if (g_ring == NULL || slot >= g_ring->slot_count) return -1;
+av_sock av_bus_attach(uint32_t slot) {
+    if (g_ring == NULL || slot >= g_ring->slot_count) return AV_BAD_SOCK;
     g_self = slot;
     atomic_store(&g_slots[slot].armed, 0);
     av_bus_clear();
@@ -202,11 +203,11 @@ static void copy_out(uint64_t position, uint8_t *to, size_t n) {
 
 static int process_gone(uint64_t claim) {
     pid_t pid = (pid_t)(claim >> 1);
-    return kill(pid, 0) != 0 && errno == ESRCH;
+    return !av_process_alive(pid);
 }
 
 static void take_claim(void) {
-    uint64_t mine = ((uint64_t)getpid() << 1) | 1;
+    uint64_t mine = ((uint64_t)av_getpid() << 1) | 1;
     unsigned spins = 0;
     for (;;) {
         uint64_t seen = atomic_load(&g_ring->claim);
@@ -220,7 +221,7 @@ static void take_claim(void) {
         if (++spins % 256 == 0 && seen != mine && process_gone(seen)) {
             if (atomic_compare_exchange_strong(&g_ring->claim, &seen, mine)) return;
         }
-        if (spins % 16 == 0) sched_yield();
+        if (spins % 16 == 0) av_yield();
     }
 }
 
@@ -281,12 +282,12 @@ uint64_t av_bus_publish(const uint8_t *topic, uint32_t topic_len,
         if ((int64_t)i == g_self && !wake_self) continue;
         if (atomic_load_explicit(&g_slots[i].armed, memory_order_relaxed) == 0) continue;
         if (atomic_exchange(&g_slots[i].armed, 0) == 0) continue;
-#ifdef __linux__
+#if defined(__linux__)
         uint64_t one = 1;
         ssize_t n = write(g_write_fds[i], &one, sizeof one);
 #else
         uint8_t one = 1;
-        ssize_t n = write(g_write_fds[i], &one, 1);
+        ssize_t n = av_write(g_write_fds[i], &one, 1);
 #endif
         (void)n;
     }
@@ -340,9 +341,9 @@ int av_bus_arm(uint64_t cursor) {
 
 void av_bus_clear(void) {
     if (g_ring == NULL || g_self < 0) return;
-    int fd = g_read_fds[g_self];
+    av_sock fd = g_read_fds[g_self];
     uint8_t scratch[64];
-    while (read(fd, scratch, sizeof scratch) > 0) {}
+    while (av_read(fd, scratch, sizeof scratch) > 0) {}
 }
 
 void av_bus_test_abandon(int32_t pid) {

@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <strings.h>
+#include "avian_compat.h"
 
 int av_host_matches(const char *pattern, const char *host) {
     if (!pattern || !host || !*pattern || !*host) return 0;

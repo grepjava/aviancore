@@ -23,12 +23,14 @@
 #  include <basetsd.h>
 
 typedef SOCKET    av_sock;           /* UINT_PTR */
-typedef HANDLE    av_poll_t;
+/* wepoll's HANDLE, carried as an integer: Swift would see a HANDLE as an
+ * optional pointer, and code shared with POSIX compares it as a number. */
+typedef uintptr_t av_poll_t;
 typedef SSIZE_T   ssize_t;
 typedef int       pid_t;             /* a process id, not a handle */
 typedef long long av_off_t;
 #  define AV_BAD_SOCK ((av_sock)INVALID_SOCKET)
-#  define AV_BAD_POLL ((av_poll_t)NULL)
+#  define AV_BAD_POLL ((av_poll_t)0)
 
 /* POSIX's scatter/gather element. Winsock's WSABUF holds the same two fields
  * in the other order, so av_writev converts rather than casting. */

@@ -18,6 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "avian_platform.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,19 +42,19 @@ typedef struct {
 
 /* Binds a non-blocking UDP socket, with SO_REUSEPORT when asked so each
  * worker owns an independent receive queue. Returns fd or -1. */
-int av_bind_udp(const char *host, uint16_t port, int reuseport, int v6only);
+av_sock av_bind_udp(const char *host, uint16_t port, int reuseport, int v6only);
 
 /* Receives up to `count` datagrams into one buffer, datagram i at
  * `buf + i * stride`. Returns how many arrived, 0 when the socket is empty,
  * -1 on a real error. Datagrams larger than `stride` are dropped, as QUIC
  * requires of anything over the maximum packet size. */
-int av_udp_recv_batch(int fd, void *buf, size_t stride,
+int av_udp_recv_batch(av_sock fd, void *buf, size_t stride,
                       av_udp_msg *msgs, int count);
 
 /* Sends one datagram from `local` (may be NULL, or unset, for the kernel's
  * choice). Returns bytes sent, or -1 with errno; EAGAIN means the send buffer
  * is full and the caller should wait for writability. */
-long av_udp_send(int fd, const void *buf, size_t len,
+long av_udp_send(av_sock fd, const void *buf, size_t len,
                  const av_udp_addr *peer, const av_udp_addr *local,
                  uint8_t ecn);
 
@@ -60,13 +62,13 @@ long av_udp_send(int fd, const void *buf, size_t len,
  * `segment` bytes each, back to back, the last allowed to be shorter. With
  * `segment` 0, or `len` no more than it, this is av_udp_send. The run is
  * accepted or refused whole. */
-long av_udp_send_segments(int fd, const void *buf, size_t len, uint16_t segment,
+long av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
                           const av_udp_addr *peer, const av_udp_addr *local,
                           uint8_t ecn);
 
 /* Whether this socket can take av_udp_send_segments with a segment size: 1 on
  * a Linux kernel with UDP_SEGMENT unless AVIAN_UDP_GSO=0, else 0. */
-int av_udp_gso_supported(int fd);
+int av_udp_gso_supported(av_sock fd);
 
 /* Whether an errno from av_udp_send_segments means segmentation itself was
  * refused, so the same datagrams should go out one at a time. */
@@ -77,7 +79,7 @@ int av_udp_addr_text(const av_udp_addr *addr, char *host, size_t host_len,
                      uint16_t *port);
 
 /* Local address of a bound UDP socket, for reporting which address a datagram arrived on. */
-int av_udp_local_addr(int fd, char *host, size_t host_len, uint16_t *port);
+int av_udp_local_addr(av_sock fd, char *host, size_t host_len, uint16_t *port);
 
 #ifdef __cplusplus
 }

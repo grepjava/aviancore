@@ -45,7 +45,7 @@ private func chain(_ step: Int, upTo last: Int, on executor: LoopExecutor, _ tra
         return try body()
     }
 
-    private func pipeHasByte(_ fd: Int32) -> Bool {
+    private func pipeHasByte(_ fd: AvianSocket) -> Bool {
         av_poll_single(fd, 0, 0) != 0
     }
 
@@ -64,7 +64,7 @@ private func chain(_ step: Int, upTo last: Int, on executor: LoopExecutor, _ tra
             #expect(executor.hasWork)
             #expect(trail.steps.isEmpty)
             // The owner's own job needs no wake.
-            if executor.wakeFD >= 0 { #expect(!pipeHasByte(executor.wakeFD)) }
+            if av_sock_ok(executor.wakeFD) != 0 { #expect(!pipeHasByte(executor.wakeFD)) }
             executor.drain()
         }
         #expect(trail.steps == [1])
@@ -104,7 +104,7 @@ private func chain(_ step: Int, upTo last: Int, on executor: LoopExecutor, _ tra
         #expect(executor.hasWork)
         #expect(executor.count == 0)
         #expect(trail.steps.isEmpty)
-        if executor.wakeFD >= 0 {
+        if av_sock_ok(executor.wakeFD) != 0 {
             #expect(pipeHasByte(executor.wakeFD))
             executor.clearWake()
             #expect(!pipeHasByte(executor.wakeFD))

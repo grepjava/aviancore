@@ -44,19 +44,37 @@ let package = Package(
                 .define("_WINSOCKAPI_", .when(platforms: [.windows])),
                 .define("NOMINMAX", .when(platforms: [.windows])),
                 .define("NOCRYPT", .when(platforms: [.windows])),
+                // BoringSSL's x86-64 assembly for Windows is NASM, which
+                // SwiftPM cannot assemble: the portable C is used there, as
+                // swift-nio-ssl does. Slower TLS on Windows, the same TLS.
+                .define("OPENSSL_NO_ASM", .when(platforms: [.windows])),
             ],
             cxxSettings: [
                 .define("_WINSOCKAPI_", .when(platforms: [.windows])),
                 .define("NOMINMAX", .when(platforms: [.windows])),
                 .define("NOCRYPT", .when(platforms: [.windows])),
+                .define("OPENSSL_NO_ASM", .when(platforms: [.windows])),
             ]
         ),
 
+        // zlib, vendored, for Windows, which has no system copy.
+        // Sources/CAvianZlib/VENDORING.md says where it came from.
+        .target(name: "CAvianZlib", exclude: ["VENDORING.md", "LICENSE"]),
+
         .target(
             name: "CAvian",
-            dependencies: ["CAvianSSL"],
+            dependencies: [
+                "CAvianSSL",
+                .target(name: "CAvianZlib", condition: .when(platforms: [.windows])),
+            ],
+            // wepoll is compiled through avian_wepoll.c, on Windows only.
+            exclude: ["vendor"],
             cSettings: [
                 .headerSearchPath("include"),
+                // Windows 10: AF_UNIX sockets and GetSystemTimePreciseAsFileTime.
+                .define("_WIN32_WINNT", to: "0x0A00", .when(platforms: [.windows])),
+                .define("WIN32_LEAN_AND_MEAN", .when(platforms: [.windows])),
+                .define("_CRT_SECURE_NO_WARNINGS", .when(platforms: [.windows])),
                 // The TLS record layer and the handshake are BoringSSL's: it
                 // spends much less on a handshake and on a small record,
                 // never having adopted OpenSSL 3.x's provider architecture.
@@ -70,9 +88,14 @@ let package = Package(
             // equivalent for. gzip links; brotli and zstd are opened at run
             // time, so a machine without them still runs.
             linkerSettings: [
-                .linkedLibrary("ssl"),
-                .linkedLibrary("crypto"),
-                .linkedLibrary("z"),
+                .linkedLibrary("ssl", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("crypto", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("z", .when(platforms: [.linux, .macOS])),
+                // OpenSSL's Windows import libraries carry the lib prefix.
+                .linkedLibrary("libssl", .when(platforms: [.windows])),
+                .linkedLibrary("libcrypto", .when(platforms: [.windows])),
+                .linkedLibrary("ws2_32", .when(platforms: [.windows])),
+                .linkedLibrary("bcrypt", .when(platforms: [.windows])),
             ]
         ),
 

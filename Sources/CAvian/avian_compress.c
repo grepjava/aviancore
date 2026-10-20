@@ -3,9 +3,9 @@
 
 #include "avian_compress.h"
 
-#include <dlfcn.h>
+#include "avian_compat.h"
+
 #include <limits.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
@@ -70,13 +70,13 @@ static struct {
     zstd_is_error_fn is_error;
 } zstd;
 
-static pthread_once_t load_once = PTHREAD_ONCE_INIT;
+static av_once_t load_once = AV_ONCE_INIT;
 static int have_brotli;
 static int have_zstd;
 
 static void *open_first(const char *const *names) {
     for (; *names; names++) {
-        void *h = dlopen(*names, RTLD_NOW | RTLD_LOCAL);
+        void *h = av_dlopen(*names);
         if (h) return h;
     }
     return NULL;
@@ -84,35 +84,43 @@ static void *open_first(const char *const *names) {
 
 static void load_libraries(void) {
     static const char *const brotli_names[] = {
+#if defined(_WIN32)
+        "brotlienc.dll", "libbrotlienc.dll", NULL,
+#else
         "libbrotlienc.so.1", "libbrotlienc.so",
         "libbrotlienc.1.dylib", "/opt/homebrew/lib/libbrotlienc.1.dylib",
         "/usr/local/lib/libbrotlienc.1.dylib", NULL,
+#endif
     };
     static const char *const zstd_names[] = {
+#if defined(_WIN32)
+        "zstd.dll", "libzstd.dll", NULL,
+#else
         "libzstd.so.1", "libzstd.so",
         "libzstd.1.dylib", "/opt/homebrew/lib/libzstd.1.dylib",
         "/usr/local/lib/libzstd.1.dylib", NULL,
+#endif
     };
 
     void *b = open_first(brotli_names);
     if (b) {
-        brotli.create = (brotli_create_fn)dlsym(b, "BrotliEncoderCreateInstance");
-        brotli.set_parameter = (brotli_set_parameter_fn)dlsym(b, "BrotliEncoderSetParameter");
-        brotli.compress_stream = (brotli_compress_stream_fn)dlsym(b, "BrotliEncoderCompressStream");
-        brotli.has_more_output = (brotli_bool_fn)dlsym(b, "BrotliEncoderHasMoreOutput");
-        brotli.is_finished = (brotli_bool_fn)dlsym(b, "BrotliEncoderIsFinished");
-        brotli.destroy = (brotli_destroy_fn)dlsym(b, "BrotliEncoderDestroyInstance");
+        brotli.create = (brotli_create_fn)av_dlsym(b, "BrotliEncoderCreateInstance");
+        brotli.set_parameter = (brotli_set_parameter_fn)av_dlsym(b, "BrotliEncoderSetParameter");
+        brotli.compress_stream = (brotli_compress_stream_fn)av_dlsym(b, "BrotliEncoderCompressStream");
+        brotli.has_more_output = (brotli_bool_fn)av_dlsym(b, "BrotliEncoderHasMoreOutput");
+        brotli.is_finished = (brotli_bool_fn)av_dlsym(b, "BrotliEncoderIsFinished");
+        brotli.destroy = (brotli_destroy_fn)av_dlsym(b, "BrotliEncoderDestroyInstance");
         have_brotli = brotli.create && brotli.set_parameter && brotli.compress_stream
             && brotli.has_more_output && brotli.is_finished && brotli.destroy;
     }
 
     void *z = open_first(zstd_names);
     if (z) {
-        zstd.create = (zstd_create_fn)dlsym(z, "ZSTD_createCCtx");
-        zstd.free = (zstd_free_fn)dlsym(z, "ZSTD_freeCCtx");
-        zstd.set_parameter = (zstd_set_parameter_fn)dlsym(z, "ZSTD_CCtx_setParameter");
-        zstd.compress_stream2 = (zstd_compress_stream2_fn)dlsym(z, "ZSTD_compressStream2");
-        zstd.is_error = (zstd_is_error_fn)dlsym(z, "ZSTD_isError");
+        zstd.create = (zstd_create_fn)av_dlsym(z, "ZSTD_createCCtx");
+        zstd.free = (zstd_free_fn)av_dlsym(z, "ZSTD_freeCCtx");
+        zstd.set_parameter = (zstd_set_parameter_fn)av_dlsym(z, "ZSTD_CCtx_setParameter");
+        zstd.compress_stream2 = (zstd_compress_stream2_fn)av_dlsym(z, "ZSTD_compressStream2");
+        zstd.is_error = (zstd_is_error_fn)av_dlsym(z, "ZSTD_isError");
         have_zstd = zstd.create && zstd.free && zstd.set_parameter
             && zstd.compress_stream2 && zstd.is_error;
     }
@@ -121,8 +129,8 @@ static void load_libraries(void) {
 int av_enc_available(int codec) {
     switch (codec) {
     case AV_ENC_GZIP: return 1;
-    case AV_ENC_BR:   pthread_once(&load_once, load_libraries); return have_brotli;
-    case AV_ENC_ZSTD: pthread_once(&load_once, load_libraries); return have_zstd;
+    case AV_ENC_BR:   av_once(&load_once, load_libraries); return have_brotli;
+    case AV_ENC_ZSTD: av_once(&load_once, load_libraries); return have_zstd;
     default:          return 0;
     }
 }
@@ -287,37 +295,45 @@ static struct {
 /* ZSTD_d_windowLogMax */
 #define ZSTD_D_WINDOW_LOG_MAX 100
 
-static pthread_once_t dec_load_once = PTHREAD_ONCE_INIT;
+static av_once_t dec_load_once = AV_ONCE_INIT;
 static int have_brotli_dec;
 static int have_zstd_dec;
 
 static void load_decoders(void) {
     static const char *const brotli_names[] = {
+#if defined(_WIN32)
+        "brotlidec.dll", "libbrotlidec.dll", NULL,
+#else
         "libbrotlidec.so.1", "libbrotlidec.so",
         "libbrotlidec.1.dylib", "/opt/homebrew/lib/libbrotlidec.1.dylib",
         "/usr/local/lib/libbrotlidec.1.dylib", NULL,
+#endif
     };
     static const char *const zstd_names[] = {
+#if defined(_WIN32)
+        "zstd.dll", "libzstd.dll", NULL,
+#else
         "libzstd.so.1", "libzstd.so",
         "libzstd.1.dylib", "/opt/homebrew/lib/libzstd.1.dylib",
         "/usr/local/lib/libzstd.1.dylib", NULL,
+#endif
     };
 
     void *b = open_first(brotli_names);
     if (b) {
-        brotli_dec.create = (brotli_create_fn)dlsym(b, "BrotliDecoderCreateInstance");
-        brotli_dec.decompress_stream = (brotli_dec_stream_fn)dlsym(b, "BrotliDecoderDecompressStream");
-        brotli_dec.destroy = (brotli_destroy_fn)dlsym(b, "BrotliDecoderDestroyInstance");
+        brotli_dec.create = (brotli_create_fn)av_dlsym(b, "BrotliDecoderCreateInstance");
+        brotli_dec.decompress_stream = (brotli_dec_stream_fn)av_dlsym(b, "BrotliDecoderDecompressStream");
+        brotli_dec.destroy = (brotli_destroy_fn)av_dlsym(b, "BrotliDecoderDestroyInstance");
         have_brotli_dec = brotli_dec.create && brotli_dec.decompress_stream && brotli_dec.destroy;
     }
 
     void *z = open_first(zstd_names);
     if (z) {
-        zstd_dec.create = (zstd_create_fn)dlsym(z, "ZSTD_createDCtx");
-        zstd_dec.free = (zstd_free_fn)dlsym(z, "ZSTD_freeDCtx");
-        zstd_dec.set_parameter = (zstd_set_parameter_fn)dlsym(z, "ZSTD_DCtx_setParameter");
-        zstd_dec.decompress_stream = (zstd_decompress_stream_fn)dlsym(z, "ZSTD_decompressStream");
-        zstd_dec.is_error = (zstd_is_error_fn)dlsym(z, "ZSTD_isError");
+        zstd_dec.create = (zstd_create_fn)av_dlsym(z, "ZSTD_createDCtx");
+        zstd_dec.free = (zstd_free_fn)av_dlsym(z, "ZSTD_freeDCtx");
+        zstd_dec.set_parameter = (zstd_set_parameter_fn)av_dlsym(z, "ZSTD_DCtx_setParameter");
+        zstd_dec.decompress_stream = (zstd_decompress_stream_fn)av_dlsym(z, "ZSTD_decompressStream");
+        zstd_dec.is_error = (zstd_is_error_fn)av_dlsym(z, "ZSTD_isError");
         have_zstd_dec = zstd_dec.create && zstd_dec.free && zstd_dec.set_parameter
             && zstd_dec.decompress_stream && zstd_dec.is_error;
     }
@@ -327,8 +343,8 @@ int av_dec_available(int codec) {
     switch (codec) {
     case AV_ENC_GZIP:
     case AV_DEC_DEFLATE: return 1;
-    case AV_ENC_BR:   pthread_once(&dec_load_once, load_decoders); return have_brotli_dec;
-    case AV_ENC_ZSTD: pthread_once(&dec_load_once, load_decoders); return have_zstd_dec;
+    case AV_ENC_BR:   av_once(&dec_load_once, load_decoders); return have_brotli_dec;
+    case AV_ENC_ZSTD: av_once(&dec_load_once, load_decoders); return have_zstd_dec;
     default:          return 0;
     }
 }

@@ -12,13 +12,18 @@
 #define _GNU_SOURCE 1
 #include "avian_sys.h"
 
-#include <arpa/inet.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#if defined(_WIN32)
+/* The POSIX sections below are guarded; their Windows versions are in
+ * avian_sys_win.c. Address parsing, SHA-1, base64 and the current worker are
+ * shared. */
+#else
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -27,6 +32,7 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
+#endif
 #endif
 
 /* ======================================================================== */
@@ -65,6 +71,8 @@ int av_parse_ip(const char *s, unsigned char out16[16], int *family) {
     }
     return -1;
 }
+
+#if !defined(_WIN32)
 
 /* ======================================================================== */
 /* Files, environment, pipes                                                */
@@ -291,6 +299,8 @@ void av_thread_join(av_thread *t) {
     free(t);
 }
 
+#endif /* !_WIN32 */
+
 /* ======================================================================== */
 /* Current worker                                                           */
 /* ======================================================================== */
@@ -301,7 +311,11 @@ void av_thread_join(av_thread *t) {
  * linked into a shared library, where the default model reads a thread-local
  * through a call to __tls_get_addr; in an executable the two compile to the
  * same instruction. */
+#if defined(_WIN32)
+static _Thread_local void *g_current_worker = NULL;
+#else
 static _Thread_local void *g_current_worker __attribute__((tls_model("initial-exec"))) = NULL;
+#endif
 
 void *av_worker_current(void) { return g_current_worker; }
 void av_worker_set_current(void *worker) { g_current_worker = worker; }
@@ -393,6 +407,8 @@ size_t av_base64(const void *data, size_t n, char *out) {
     return o;
 }
 
+#if !defined(_WIN32)
+
 /* Random bytes for the WebSocket close/ping payloads and anywhere else the
  * server needs unpredictability. Falls back to /dev/urandom when getentropy is
  * unavailable. */
@@ -448,3 +464,5 @@ void av_exit_after(unsigned seconds, int code) {
 }
 
 void av_cancel_exit_timer(void) { alarm(0); }
+
+#endif /* !_WIN32 */

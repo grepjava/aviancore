@@ -45,6 +45,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "avian_platform.h"
+
 /* Maps a ring of `ring_bytes`, rounded up to a power of two, and `slots` wake
  * slots. Call once, before any fork. Returns 0, or -1. */
 int av_bus_init(uint64_t ring_bytes, uint32_t slots);
@@ -56,7 +58,7 @@ uint32_t av_bus_max_message(void);
 
 /* Makes this process the holder of `slot`, and returns the descriptor that
  * becomes readable when the slot is woken. -1 when the slot does not exist. */
-int av_bus_attach(uint32_t slot);
+av_sock av_bus_attach(uint32_t slot);
 
 /* Publishes a message and returns its sequence number, or 0 when there is no
  * ring or the message is larger than av_bus_max_message. Every armed slot is

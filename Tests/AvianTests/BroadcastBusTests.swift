@@ -9,9 +9,13 @@
 import Glibc
 #elseif canImport(Darwin)
 import Darwin
+#elseif canImport(ucrt)
+import ucrt
+import WinSDK
 #endif
 import Testing
 import CAvian
+import AvianCore
 
 /// The process ID of a process that has certainly finished, for the test that
 /// a claim held by a dead writer is taken over.
@@ -22,6 +26,21 @@ import CAvian
 /// copy of this process, only a process ID nothing is using, and picking a
 /// number instead would be picking one some live process may hold.
 private func pidThatHasExited() -> pid_t? {
+    #if os(Windows)
+    // `cmd /c exit 0`, waited for: the same guarantee, a process ID that was
+    // real and has finished.
+    var info = PROCESS_INFORMATION()
+    var startup = STARTUPINFOW()
+    startup.cb = DWORD(MemoryLayout<STARTUPINFOW>.size)
+    var command = Array("cmd.exe /c exit 0".utf16) + [0]
+    guard CreateProcessW(nil, &command, nil, nil, false, DWORD(CREATE_NO_WINDOW), nil, nil,
+                         &startup, &info) else { return nil }
+    WaitForSingleObject(info.hProcess, INFINITE)
+    let pid = pid_t(GetProcessId(info.hProcess))
+    CloseHandle(info.hThread)
+    CloseHandle(info.hProcess)
+    return pid
+    #else
     for path in ["/usr/bin/true", "/bin/true"] {
         var child: pid_t = 0
         let spawned = path.withCString { executable -> Int32 in
@@ -35,10 +54,11 @@ private func pidThatHasExited() -> pid_t? {
         return child
     }
     return nil
+    #endif
 }
 
 private let ringReady: Bool = {
-    av_bus_init(1 << 16, 2) == 0 && av_bus_attach(0) >= 0
+    av_bus_init(1 << 16, 2) == 0 && av_sock_ok(av_bus_attach(0)) != 0
 }()
 
 private func publish(_ topic: String, _ event: String = "", _ data: [UInt8], wakeSelf: Bool = false) -> UInt64 {
@@ -78,9 +98,8 @@ private func read(_ sequence: UInt64, capacity: Int = 1 << 16) -> Read {
     return out
 }
 
-private func readable(_ fd: Int32) -> Bool {
-    var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-    return poll(&p, 1, 0) == 1
+private func readable(_ fd: AvianSocket) -> Bool {
+    av_poll_single(fd, 0, 0) == 1
 }
 
 @Suite(.serialized)

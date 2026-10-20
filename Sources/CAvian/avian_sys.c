@@ -1,6 +1,8 @@
 #define _GNU_SOURCE 1
 #include "avian_sys.h"
 
+#include <string.h>
+
 /* POSIX. The Windows implementation of this header is avian_sys_win.c. */
 #if !defined(_WIN32)
 
@@ -691,6 +693,7 @@ int av_poll_single(int fd, int for_write, int timeout_ms) {
     return 1;
 }
 
+void av_net_init(void) {}
 int av_errno(void) { return errno; }
 void av_set_errno(int e) { errno = e; }
 const char *av_strerror(int e) { return strerror(e); }
@@ -780,6 +783,9 @@ int64_t av_unix_seconds(void) {
     return (int64_t)ts.tv_sec;
 }
 
+#endif /* !_WIN32 */
+
+/* Portable: av_http_date is the same on every platform. */
 static const char *const kDays[7]    = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 static const char *const kMonths[12] = {"Jan","Feb","Mar","Apr","May","Jun",
                                         "Jul","Aug","Sep","Oct","Nov","Dec"};
@@ -827,6 +833,8 @@ int av_http_date(char *buf29, int64_t t) {
     memcpy(buf29 + 25, " GMT", 4);
     return 29;
 }
+
+#if !defined(_WIN32)
 
 /* ======================================================================== */
 /* Signals / processes                                                      */
@@ -1032,6 +1040,39 @@ long av_raise_nofile_limit(void) {
         getrlimit(RLIMIT_NOFILE, &rl);
     }
     return (long)rl.rlim_cur;
+}
+
+/* ======================================================================== */
+/* Shared memory and small process helpers                                  */
+/* ======================================================================== */
+
+#include <sched.h>
+#include <sys/mman.h>
+#if defined(__linux__)
+#  include <sys/random.h>
+#endif
+
+void *av_shm_map(size_t bytes) {
+    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    return p == MAP_FAILED ? NULL : p;
+}
+
+void av_shm_unmap(void *p, size_t bytes) { if (p) munmap(p, bytes); }
+
+int av_process_alive(pid_t pid) { return !(kill(pid, 0) != 0 && errno == ESRCH); }
+
+void av_yield(void) { sched_yield(); }
+
+uint64_t av_entropy64(void) {
+    uint64_t seed = 0;
+#if defined(__linux__)
+    if (getrandom(&seed, sizeof seed, 0) == (ssize_t)sizeof seed) return seed;
+#else
+    if (av_random_bytes(&seed, sizeof seed) == 0) return seed;
+#endif
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)getpid();
 }
 
 #endif /* !_WIN32 */

@@ -173,6 +173,11 @@ uint16_t av_local_port(av_sock fd);
  * supervisor checking whether a replacement worker has reported ready. */
 int av_poll_single(av_sock fd, int for_write, int timeout_ms);
 
+/* Starts the socket library where one has to be started (Winsock); a no-op
+ * on POSIX. Every av_ call that makes a socket does it already; this is for C
+ * code that calls getaddrinfo or socket itself. */
+void av_net_init(void);
+
 int av_errno(void);
 void av_set_errno(int e);
 const char *av_strerror(int e);
@@ -289,6 +294,28 @@ int av_execv(const char *path, char *const argv[]);
 void av_block_piped_signals(void);
 void av_unblock_piped_signals(void);
 int av_random_bytes(void *out, size_t n);
+
+/* ---------------------------------------------------------------------------
+ * Memory every worker process shares
+ *
+ * The cache, the rate limiter, the load and metrics tables and the broadcast
+ * bus each live in one region all workers see. On POSIX that is an anonymous
+ * MAP_SHARED mapping made before the workers are forked, which they inherit.
+ * On Windows it is a mapping of the paging file; its handle is kept so that a
+ * worker process started later can be given it.
+ * ------------------------------------------------------------------------- */
+
+/* `bytes` of zeroed shared memory, or NULL with errno set. */
+void *av_shm_map(size_t bytes);
+void av_shm_unmap(void *p, size_t bytes);
+
+/* 1 when a process with this id exists (kill(pid, 0) on POSIX). */
+int av_process_alive(pid_t pid);
+/* Gives up the rest of this thread's time slice. */
+void av_yield(void);
+/* 64 bits from the system's random source for seeding a hash, or failing
+ * that the clock and the process id mixed together; never fails. */
+uint64_t av_entropy64(void);
 
 /* ---------------------------------------------------------------------------
  * The current worker

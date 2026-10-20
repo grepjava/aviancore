@@ -5,10 +5,11 @@
 
 #include "avian_metrics.h"
 
+#include "avian_sys.h"
+
 #include <errno.h>
 #include <stdatomic.h>
 #include <string.h>
-#include <sys/mman.h>
 
 #define AV_CACHE_LINE 64
 
@@ -37,9 +38,8 @@ int av_metrics_init(int slots) {
     if (slots < 1) slots = 1;
     g_stride = slot_stride();
     size_t bytes = g_stride * (size_t)slots;
-    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
-                   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) return -1;
+    void *p = av_shm_map(bytes);
+    if (!p) return -1;
     memset(p, 0, bytes);
     g_page = (unsigned char *)p;
     g_slots = slots;
@@ -72,7 +72,11 @@ void av_metrics_set(int slot, int index, uint64_t v) {
 }
 
 /* initial-exec for the reason given at g_current_worker in avian_extra.c. */
+#if defined(_WIN32)
+static _Thread_local int g_local_slot = 0;
+#else
 static _Thread_local int g_local_slot __attribute__((tls_model("initial-exec"))) = 0;
+#endif
 
 void av_metrics_bind(int slot) { g_local_slot = slot; }
 

@@ -19,6 +19,8 @@
 import Glibc
 #elseif canImport(Darwin)
 import Darwin
+#elseif canImport(ucrt)
+import ucrt
 #endif
 
 /// The largest a single buffer is allowed to grow to.

@@ -34,8 +34,10 @@
 #include "avian_tls.h"
 #include "avian_crypto.h"
 
+#include "avian_sys.h"
+#include "avian_compat.h"
+
 #include <errno.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -71,12 +73,12 @@ int av_tls_ctx_names(av_tls_ctx *ctx, int host_index, int name_index,
     return 0;
 }
 void av_tls_ctx_free(av_tls_ctx *ctx) { (void)ctx; }
-av_tls *av_tls_new(av_tls_ctx *ctx, int fd) { (void)ctx; (void)fd; return NULL; }
+av_tls *av_tls_new(av_tls_ctx *ctx, av_sock fd) { (void)ctx; (void)fd; return NULL; }
 av_tls_ctx *av_tls_client_ctx_new(const char *ca_file, const char *alpn,
                                   char *err, size_t err_len) {
     (void)ca_file; (void)alpn; (void)err; (void)err_len; return NULL;
 }
-av_tls *av_tls_client_new(av_tls_ctx *ctx, int fd, const char *hostname) {
+av_tls *av_tls_client_new(av_tls_ctx *ctx, av_sock fd, const char *hostname) {
     (void)ctx; (void)fd; (void)hostname; return NULL;
 }
 void av_tls_free(av_tls *tls) { (void)tls; }
@@ -110,9 +112,21 @@ void av_tls_shutdown(av_tls *tls) { (void)tls; }
 #else
 
 #include <stdio.h>
-#include <strings.h>
+#if !defined(_WIN32)
 #include <unistd.h>
 #include <arpa/inet.h>
+#endif
+
+/* The greedy BIO's socket calls. read and write themselves on POSIX; Winsock's
+ * through av_read and av_write on Windows, which report a socket with nothing
+ * to give as EAGAIN, as read does. */
+#if defined(_WIN32)
+#define sock_read(fd, buf, n)  av_read((fd), (buf), (n))
+#define sock_write(fd, buf, n) av_write((fd), (buf), (n))
+#else
+#define sock_read(fd, buf, n)  read((fd), (buf), (n))
+#define sock_write(fd, buf, n) write((fd), (buf), (n))
+#endif
 
 /* AVIAN_TLS_BORINGSSL builds the record layer and the handshake against
  * BoringSSL instead of OpenSSL, and Package.swift defines it: BoringSSL is
@@ -197,7 +211,7 @@ struct av_tls_ctx {
 #define AV_GREEDY_BUF 16384
 
 struct av_greedy {
-    int fd;
+    av_sock fd;
     int start, end;                     /* the filled part of buf */
     unsigned char buf[AV_GREEDY_BUF];
 };
@@ -218,7 +232,7 @@ struct av_tls {
 };
 
 /* Binds a TLS object to a socket; defined with the BIO it may install. */
-static int tls_attach(struct av_tls *tls, int fd);
+static int tls_attach(struct av_tls *tls, av_sock fd);
 
 /* Marks a connection that is being served a challenge certificate, so that the
  * SNI and ALPN callbacks leave it alone. Allocated once per process. */
@@ -476,7 +490,7 @@ static int add_host(struct av_tls_ctx *wrapper, const char *cert_path,
  * before ALPN is known, and the ALPN callback runs after the certificate has
  * been chosen, so neither alone can serve a certificate that depends on both. */
 
-static pthread_once_t acme_index_once = PTHREAD_ONCE_INIT;
+static av_once_t acme_index_once = AV_ONCE_INIT;
 
 static void make_acme_index(void) {
     acme_ex_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
@@ -552,7 +566,7 @@ static void acme_pick(SSL *ssl, struct av_tls_ctx *wrapper,
 /* BoringSSL's callback carries no argument of its own, so the wrapper rides
  * on the context and is fetched back out here. */
 static int acme_ctx_index = -1;
-static pthread_once_t acme_ctx_index_once = PTHREAD_ONCE_INIT;
+static av_once_t acme_ctx_index_once = AV_ONCE_INIT;
 
 static void make_acme_ctx_index(void) {
     acme_ctx_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
@@ -597,10 +611,10 @@ static int acme_client_hello(SSL *ssl, int *alert, void *arg) {
 
 int av_tls_ctx_set_acme_dir(av_tls_ctx *wrapper, const char *dir) {
     if (!wrapper || !dir) return -1;
-    pthread_once(&acme_index_once, make_acme_index);
+    av_once(&acme_index_once, make_acme_index);
     if (acme_ex_index < 0) return -1;
 #ifdef AVIAN_TLS_BORINGSSL
-    pthread_once(&acme_ctx_index_once, make_acme_ctx_index);
+    av_once(&acme_ctx_index_once, make_acme_ctx_index);
     if (acme_ctx_index < 0) return -1;
 #endif
     char *copy = strdup(dir);
@@ -761,7 +775,7 @@ av_tls_ctx *av_tls_client_ctx_new(const char *ca_file, const char *alpn,
     return wrapper;
 }
 
-av_tls *av_tls_client_new(av_tls_ctx *ctx, int fd, const char *hostname) {
+av_tls *av_tls_client_new(av_tls_ctx *ctx, av_sock fd, const char *hostname) {
     if (!ctx) return NULL;
     struct av_tls *tls = calloc(1, sizeof *tls);
     if (!tls) return NULL;
@@ -816,7 +830,7 @@ static int greedy_read(BIO *bio, char *out, int len) {
     BIO_clear_retry_flags(bio);
     if (g->start == g->end) {
         ssize_t n;
-        do { n = read(g->fd, g->buf, sizeof g->buf); } while (n < 0 && errno == EINTR);
+        do { n = sock_read(g->fd, g->buf, sizeof g->buf); } while (n < 0 && errno == EINTR);
         if (n <= 0) {
             /* A short read is the socket being empty, not the end of it. Say
              * so, or the record layer reports a broken connection. */
@@ -838,7 +852,7 @@ static int greedy_write(BIO *bio, const char *in, int len) {
     if (!g || !in || len <= 0) return 0;
     BIO_clear_retry_flags(bio);
     ssize_t n;
-    do { n = write(g->fd, in, (size_t)len); } while (n < 0 && errno == EINTR);
+    do { n = sock_write(g->fd, in, (size_t)len); } while (n < 0 && errno == EINTR);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) BIO_set_retry_write(bio);
     return (int)n;
 }
@@ -865,7 +879,7 @@ static int greedy_destroy(BIO *bio) {
 /* One method for the process, made once. The socket is not closed here: the
  * worker owns the descriptor and closes it itself. */
 static BIO_METHOD *greedy_meth = NULL;
-static pthread_once_t greedy_once = PTHREAD_ONCE_INIT;
+static av_once_t greedy_once = AV_ONCE_INIT;
 
 static void make_greedy_meth(void) {
     BIO_METHOD *m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK, "avian greedy");
@@ -881,8 +895,8 @@ static void make_greedy_meth(void) {
 /* A BIO over `fd` that reads ahead. NULL if it cannot be made, and the caller
  * falls back to the plain socket BIO: an extra read a request is worth far
  * more than a connection refused. */
-static BIO *greedy_bio(int fd, struct av_greedy **out) {
-    pthread_once(&greedy_once, make_greedy_meth);
+static BIO *greedy_bio(av_sock fd, struct av_greedy **out) {
+    av_once(&greedy_once, make_greedy_meth);
     if (!greedy_meth) return NULL;
     struct av_greedy *g = calloc(1, sizeof *g);
     if (!g) return NULL;
@@ -913,7 +927,7 @@ static int greedy_disabled(void) {
     return cached;
 }
 
-static int tls_attach(struct av_tls *tls, int fd) {
+static int tls_attach(struct av_tls *tls, av_sock fd) {
 #ifdef AVIAN_TLS_BORINGSSL
     BIO *bio = greedy_disabled() ? NULL : greedy_bio(fd, &tls->greedy);
     if (bio) {
@@ -924,10 +938,13 @@ static int tls_attach(struct av_tls *tls, int fd) {
     }
     tls->greedy = NULL;
 #endif
-    return SSL_set_fd(tls->ssl, fd) == 1;
+    /* SSL_set_fd takes an int. A Windows SOCKET is pointer-sized, but the
+     * values Windows hands out stay far below 2^31, and BoringSSL widens it
+     * back to a SOCKET inside. */
+    return SSL_set_fd(tls->ssl, (int)fd) == 1;
 }
 
-av_tls *av_tls_new(av_tls_ctx *ctx, int fd) {
+av_tls *av_tls_new(av_tls_ctx *ctx, av_sock fd) {
     if (!ctx) return NULL;
     struct av_tls *tls = calloc(1, sizeof *tls);
     if (!tls) return NULL;
@@ -1226,7 +1243,7 @@ void av_tls_shutdown(av_tls *tls) {
 #define TLS_SET_RECORD_TYPE 1
 #endif
 
-int av_ktls_close_notify(int fd) {
+int av_ktls_close_notify(av_sock fd) {
     /* An alert record: warning (1), close_notify (0). The kernel frames and
      * encrypts it like any other record once told its type. */
     unsigned char alert[2] = { 1, 0 };
@@ -1250,5 +1267,5 @@ int av_ktls_close_notify(int fd) {
     return sendmsg(fd, &msg, MSG_DONTWAIT | MSG_NOSIGNAL) == (ssize_t)sizeof alert ? 0 : -1;
 }
 #else
-int av_ktls_close_notify(int fd) { (void)fd; errno = ENOTSUP; return -1; }
+int av_ktls_close_notify(av_sock fd) { (void)fd; errno = ENOTSUP; return -1; }
 #endif

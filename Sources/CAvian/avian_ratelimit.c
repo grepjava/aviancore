@@ -3,15 +3,18 @@
 
 #include "avian_ratelimit.h"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
+#include "avian_sys.h"
+
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/socket.h>
 #include <time.h>
+#if !defined(_WIN32)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #ifdef __linux__
 #include <sys/random.h>
@@ -60,21 +63,26 @@ int av_ratelimit_init(uint64_t emission_us, uint64_t tolerance_us, int log2_entr
     if (log2_entries < 8) log2_entries = 8;
     if (log2_entries > 24) log2_entries = 24;
     size_t count = (size_t)1 << log2_entries;
-    void *p = mmap(NULL, count * sizeof(struct av_rl_entry), PROT_READ | PROT_WRITE,
-                   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) return -1;
+    void *p = av_shm_map(count * sizeof(struct av_rl_entry));
+    if (!p) return -1;
     memset(p, 0, count * sizeof(struct av_rl_entry));
 
     uint64_t seed = 0;
-#ifdef __linux__
+#if defined(__linux__)
     if (getrandom(&seed, sizeof seed, 0) != (ssize_t)sizeof seed) seed = 0;
+#elif defined(_WIN32)
+    if (av_random_bytes(&seed, sizeof seed) != 0) seed = 0;
 #else
     arc4random_buf(&seed, sizeof seed);
 #endif
     if (seed == 0) {
+#if defined(_WIN32)
+        seed = mix(av_entropy64());
+#else
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         seed = mix((uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)getpid());
+#endif
     }
 
     g_seed = seed;

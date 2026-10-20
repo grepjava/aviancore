@@ -3,14 +3,17 @@
 
 #include "avian_cache.h"
 
+#include "avian_sys.h"
+
 #include <errno.h>
-#include <signal.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <time.h>
+#if !defined(_WIN32)
+#include <signal.h>
 #include <unistd.h>
+#endif
 
 #ifdef __linux__
 #include <sys/random.h>
@@ -130,7 +133,7 @@ static uint64_t publish_word(uint64_t claimed) {
 
 /* This process, as a claim names it, or 0 when it cannot be named. */
 static uint64_t self_owner(void) {
-    pid_t pid = getpid();
+    pid_t pid = av_getpid();
     if (pid <= 0 || (uint64_t)pid > OWNER_MASK) return 0;
     return (uint64_t)pid;
 }
@@ -141,7 +144,7 @@ static uint64_t self_owner(void) {
 static int owner_gone(uint64_t owner, uint64_t self) {
     if (owner == self) return 0;
     if (owner == 0) return 1;
-    return kill((pid_t)owner, 0) != 0 && errno == ESRCH;
+    return !av_process_alive((pid_t)owner);
 }
 
 /* The mark for a target: every copy for it numbered at or below this is out of
@@ -192,23 +195,29 @@ long av_cache_init(uint64_t total_bytes, uint32_t max_head, uint32_t max_body) {
     while (marks < total_slots * MARKS_PER_SLOT) marks *= 2;
     bytes += (size_t)marks * sizeof(_Atomic uint64_t);
 
-    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) return -1;
+    void *p = av_shm_map(bytes);
+    if (!p) return -1;
     /* Anonymous memory is zero already, and touching every page of a large
      * table here would commit all of it up front. A zeroed slot is stable and
      * has generation zero, which no lookup can match: the table's generation
      * starts at one. A zeroed mark is below every request's number. */
 
     uint64_t seed = 0;
-#ifdef __linux__
+#if defined(__linux__)
     if (getrandom(&seed, sizeof seed, 0) != (ssize_t)sizeof seed) seed = 0;
+#elif defined(_WIN32)
+    if (av_random_bytes(&seed, sizeof seed) != 0) seed = 0;
 #else
     arc4random_buf(&seed, sizeof seed);
 #endif
     if (seed == 0) {
+#if defined(_WIN32)
+        seed = mix(av_entropy64());
+#else
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         seed = mix((uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)getpid());
+#endif
     }
 #ifdef AV_CACHE_TESTING
     /* Which targets share a mark has to be the same on every run. */

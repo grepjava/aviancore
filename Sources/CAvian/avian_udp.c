@@ -12,16 +12,26 @@
 #define _GNU_SOURCE 1
 
 #include "avian_udp.h"
+#include "avian_sys.h"
+
+#if defined(_WIN32)
+#  include <mswsock.h>
+#  define DWORD_OR_SOCKLEN DWORD
+#else
+#  define DWORD_OR_SOCKLEN socklen_t
+#endif
 
 #include <errno.h>
-#include <netdb.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <netdb.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #if defined(__linux__)
 #  include <linux/in6.h>
@@ -31,11 +41,16 @@
 #  endif
 #endif
 
-/* av_set_nonblock / av_set_cloexec live in avian_sys.c. */
-int av_set_nonblock(int fd);
-int av_set_cloexec(int fd);
+static void store_addr(av_udp_addr *out, const struct sockaddr *sa, int len) {
+    out->len = 0;
+    if (!sa || len == 0 || (size_t)len > sizeof out->sa) return;
+    memcpy(out->sa, sa, (size_t)len);
+    out->len = (uint64_t)len;
+}
 
-int av_bind_udp(const char *host, uint16_t port, int reuseport, int v6only) {
+#if !defined(_WIN32)
+
+av_sock av_bind_udp(const char *host, uint16_t port, int reuseport, int v6only) {
     char portbuf[8];
     snprintf(portbuf, sizeof portbuf, "%u", (unsigned)port);
 
@@ -103,13 +118,6 @@ int av_bind_udp(const char *host, uint16_t port, int reuseport, int v6only) {
     }
     freeaddrinfo(res);
     return -1;
-}
-
-static void store_addr(av_udp_addr *out, const struct sockaddr *sa, socklen_t len) {
-    out->len = 0;
-    if (!sa || len == 0 || (size_t)len > sizeof out->sa) return;
-    memcpy(out->sa, sa, (size_t)len);
-    out->len = (uint64_t)len;
 }
 
 /* Pulls the destination address and the ECN bits out of a datagram's
@@ -180,7 +188,7 @@ static void read_cmsgs(struct msghdr *mh, av_udp_msg *msg) {
 
 #define AV_CMSG_ROOM 256
 
-int av_udp_recv_batch(int fd, void *buf, size_t stride,
+int av_udp_recv_batch(av_sock fd, void *buf, size_t stride,
                       av_udp_msg *msgs, int count) {
     if (count <= 0 || stride == 0) return 0;
 #if defined(__linux__)
@@ -219,7 +227,7 @@ int av_udp_recv_batch(int fd, void *buf, size_t stride,
          * half a packet, so it is dropped rather than mis-parsed. */
         if (hdrs[i].msg_hdr.msg_flags & MSG_TRUNC) continue;
         av_udp_msg *m = &msgs[kept];
-        store_addr(&m->peer, (struct sockaddr *)&from[i], hdrs[i].msg_hdr.msg_namelen);
+        store_addr(&m->peer, (struct sockaddr *)&from[i], (int)hdrs[i].msg_hdr.msg_namelen);
         read_cmsgs(&hdrs[i].msg_hdr, m);
         m->len = hdrs[i].msg_len;
         /* Compact the buffer only when something was dropped. */
@@ -256,7 +264,7 @@ int av_udp_recv_batch(int fd, void *buf, size_t stride,
         }
         if (mh.msg_flags & MSG_TRUNC) continue;
         av_udp_msg *m = &msgs[kept];
-        store_addr(&m->peer, (struct sockaddr *)&from, mh.msg_namelen);
+        store_addr(&m->peer, (struct sockaddr *)&from, (int)mh.msg_namelen);
         read_cmsgs(&mh, m);
         m->len = (uint32_t)n;
         kept++;
@@ -265,7 +273,7 @@ int av_udp_recv_batch(int fd, void *buf, size_t stride,
 #endif
 }
 
-int av_udp_gso_supported(int fd) {
+int av_udp_gso_supported(av_sock fd) {
 #if defined(__linux__) && defined(UDP_SEGMENT)
     /* AVIAN_UDP_GSO=0 turns it off, so the one-datagram-per-send path the
      * tests would otherwise never reach on Linux can still be exercised. */
@@ -280,19 +288,23 @@ int av_udp_gso_supported(int fd) {
 #endif
 }
 
+#endif /* !_WIN32 */
+
 int av_udp_gso_refused(int err) {
     /* What sendmsg says when the kernel or the device cannot segment: the
      * datagrams themselves were fine and go out one by one instead. */
     return err == EIO || err == EINVAL || err == ENOPROTOOPT || err == EOPNOTSUPP;
 }
 
-long av_udp_send(int fd, const void *buf, size_t len,
+#if !defined(_WIN32)
+
+long av_udp_send(av_sock fd, const void *buf, size_t len,
                  const av_udp_addr *peer, const av_udp_addr *local,
                  uint8_t ecn) {
     return av_udp_send_segments(fd, buf, len, 0, peer, local, ecn);
 }
 
-long av_udp_send_segments(int fd, const void *buf, size_t len, uint16_t segment,
+long av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
                           const av_udp_addr *peer, const av_udp_addr *local,
                           uint8_t ecn) {
     if (!peer || peer->len == 0) { errno = EINVAL; return -1; }
@@ -412,6 +424,8 @@ long av_udp_send_segments(int fd, const void *buf, size_t len, uint16_t segment,
     return (long)n;
 }
 
+#endif /* !_WIN32 */
+
 int av_udp_addr_text(const av_udp_addr *addr, char *host, size_t host_len,
                      uint16_t *port) {
     if (host && host_len) host[0] = 0;
@@ -419,7 +433,7 @@ int av_udp_addr_text(const av_udp_addr *addr, char *host, size_t host_len,
     if (!addr || addr->len == 0) return -1;
     const struct sockaddr *sa = (const struct sockaddr *)addr->sa;
     if (host && host_len) {
-        if (getnameinfo(sa, (socklen_t)addr->len, host, (socklen_t)host_len,
+        if (getnameinfo(sa, (int)addr->len, host, (DWORD_OR_SOCKLEN)host_len,
                         NULL, 0, NI_NUMERICHOST) != 0) {
             host[0] = 0;
         }
@@ -434,11 +448,273 @@ int av_udp_addr_text(const av_udp_addr *addr, char *host, size_t host_len,
     return 0;
 }
 
-int av_udp_local_addr(int fd, char *host, size_t host_len, uint16_t *port) {
+int av_udp_local_addr(av_sock fd, char *host, size_t host_len, uint16_t *port) {
     struct sockaddr_storage ss;
+#if defined(_WIN32)
+    int len = sizeof ss;
+#else
     socklen_t len = sizeof ss;
+#endif
     if (getsockname(fd, (struct sockaddr *)&ss, &len) != 0) return -1;
     av_udp_addr a;
-    store_addr(&a, (struct sockaddr *)&ss, len);
+    store_addr(&a, (struct sockaddr *)&ss, (int)len);
     return av_udp_addr_text(&a, host, host_len, port);
 }
+
+#if defined(_WIN32)
+
+/* ------------------------------------------------------------------------ */
+/* Windows                                                                  */
+/* ------------------------------------------------------------------------ */
+
+/* WSARecvMsg is not exported: it is asked of the socket provider, once. */
+static LPFN_WSARECVMSG g_wsarecvmsg = NULL;
+
+static LPFN_WSARECVMSG recvmsg_fn(av_sock fd) {
+    if (g_wsarecvmsg) return g_wsarecvmsg;
+    GUID id = WSAID_WSARECVMSG;
+    LPFN_WSARECVMSG fn = NULL;
+    DWORD got = 0;
+    if (WSAIoctl(fd, SIO_GET_EXTENSION_FUNCTION_POINTER, &id, sizeof id,
+                 &fn, sizeof fn, &got, NULL, NULL) != 0) return NULL;
+    g_wsarecvmsg = fn;
+    return fn;
+}
+
+static void set_errno_wsa(void) {
+    switch (WSAGetLastError()) {
+    case WSAEWOULDBLOCK: errno = EAGAIN; break;
+    case WSAEINTR:       errno = EINTR; break;
+    case WSAEMSGSIZE:    errno = EMSGSIZE; break;
+    case WSAEINVAL:      errno = EINVAL; break;
+    case WSAENOBUFS:     errno = ENOBUFS; break;
+    case WSAEHOSTUNREACH:
+    case WSAENETUNREACH: errno = ENETUNREACH; break;
+    case WSAEADDRINUSE:  errno = EADDRINUSE; break;
+    case WSAEACCES:      errno = EACCES; break;
+    default:             errno = EIO; break;
+    }
+}
+
+av_sock av_bind_udp(const char *host, uint16_t port, int reuseport, int v6only) {
+    (void)reuseport;   /* no SO_REUSEPORT; see av_listen_tcp */
+    char portbuf[8];
+    snprintf(portbuf, sizeof portbuf, "%u", (unsigned)port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
+    av_net_init();   /* before getaddrinfo */
+
+    struct addrinfo *res = NULL;
+    const char *h = (host && host[0]) ? host : NULL;
+    if (getaddrinfo(h, portbuf, &hints, &res) != 0) { errno = EINVAL; return AV_BAD_SOCK; }
+
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        SOCKET fd = WSASocketW(ai->ai_family, ai->ai_socktype, ai->ai_protocol, NULL, 0,
+                               WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+        if (fd == INVALID_SOCKET) continue;
+        DWORD one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof one);
+        /* Without this an ICMP port-unreachable for an earlier send makes the
+         * next receive fail with WSAECONNRESET, on a socket every client
+         * shares: how Windows reports the ICMP, not a broken socket. */
+        BOOL off = FALSE;
+        DWORD ignored = 0;
+        WSAIoctl(fd, SIO_UDP_CONNRESET, &off, sizeof off, NULL, 0, &ignored, NULL, NULL);
+        if (ai->ai_family == AF_INET6) {
+            DWORD v = v6only ? 1 : 0;
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v, sizeof v);
+            setsockopt(fd, IPPROTO_IPV6, IPV6_PKTINFO, (const char *)&one, sizeof one);
+            setsockopt(fd, IPPROTO_IPV6, IPV6_DONTFRAG, (const char *)&one, sizeof one);
+#ifdef IPV6_RECVECN
+            setsockopt(fd, IPPROTO_IPV6, IPV6_RECVECN, (const char *)&one, sizeof one);
+#endif
+        }
+        /* On a dual-stack socket the IPv4 options cover v4-mapped traffic. */
+        setsockopt(fd, IPPROTO_IP, IP_PKTINFO, (const char *)&one, sizeof one);
+        setsockopt(fd, IPPROTO_IP, IP_DONTFRAGMENT, (const char *)&one, sizeof one);
+#ifdef IP_RECVECN
+        setsockopt(fd, IPPROTO_IP, IP_RECVECN, (const char *)&one, sizeof one);
+#endif
+        int bufsize = 2 * 1024 * 1024;
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char *)&bufsize, sizeof bufsize);
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const char *)&bufsize, sizeof bufsize);
+
+        if (bind(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) {
+            av_set_nonblock(fd);
+            freeaddrinfo(res);
+            return fd;
+        }
+        set_errno_wsa();
+        int saved = errno;
+        closesocket(fd);
+        errno = saved;
+    }
+    freeaddrinfo(res);
+    return AV_BAD_SOCK;
+}
+
+static void read_cmsgs(WSAMSG *mh, av_udp_msg *msg) {
+    msg->local.len = 0;
+    msg->ecn = 0;
+    for (WSACMSGHDR *cm = WSA_CMSG_FIRSTHDR(mh); cm; cm = WSA_CMSG_NXTHDR(mh, cm)) {
+        if (cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_PKTINFO) {
+            IN_PKTINFO pi;
+            memcpy(&pi, WSA_CMSG_DATA(cm), sizeof pi);
+            struct sockaddr_in a;
+            memset(&a, 0, sizeof a);
+            a.sin_family = AF_INET;
+            a.sin_addr = pi.ipi_addr;
+            store_addr(&msg->local, (struct sockaddr *)&a, sizeof a);
+        } else if (cm->cmsg_level == IPPROTO_IPV6 && cm->cmsg_type == IPV6_PKTINFO) {
+            IN6_PKTINFO pi;
+            memcpy(&pi, WSA_CMSG_DATA(cm), sizeof pi);
+            struct sockaddr_in6 a;
+            memset(&a, 0, sizeof a);
+            a.sin6_family = AF_INET6;
+            a.sin6_addr = pi.ipi6_addr;
+            a.sin6_scope_id = pi.ipi6_ifindex;
+            store_addr(&msg->local, (struct sockaddr *)&a, sizeof a);
+        }
+#ifdef IP_ECN
+        else if (cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_ECN) {
+            INT ecn = 0;
+            memcpy(&ecn, WSA_CMSG_DATA(cm), sizeof ecn);
+            msg->ecn = (uint8_t)(ecn & 0x03);
+        }
+#endif
+#ifdef IPV6_ECN
+        else if (cm->cmsg_level == IPPROTO_IPV6 && cm->cmsg_type == IPV6_ECN) {
+            INT ecn = 0;
+            memcpy(&ecn, WSA_CMSG_DATA(cm), sizeof ecn);
+            msg->ecn = (uint8_t)(ecn & 0x03);
+        }
+#endif
+    }
+}
+
+#define AV_CMSG_ROOM 256
+
+/* One WSARecvMsg per datagram: Windows has no recvmmsg. */
+int av_udp_recv_batch(av_sock fd, void *buf, size_t stride,
+                      av_udp_msg *msgs, int count) {
+    if (count <= 0 || stride == 0) return 0;
+    LPFN_WSARECVMSG recvmsg = recvmsg_fn(fd);
+    if (!recvmsg) { errno = ENOSYS; return -1; }
+    int kept = 0;
+    while (kept < count) {
+        struct sockaddr_storage from;
+        char control[AV_CMSG_ROOM];
+        WSABUF data;
+        data.buf = (CHAR *)buf + (size_t)kept * stride;
+        data.len = (ULONG)stride;
+        WSAMSG mh;
+        memset(&mh, 0, sizeof mh);
+        mh.name = (LPSOCKADDR)&from;
+        mh.namelen = sizeof from;
+        mh.lpBuffers = &data;
+        mh.dwBufferCount = 1;
+        mh.Control.buf = control;
+        mh.Control.len = sizeof control;
+        DWORD n = 0;
+        if (recvmsg(fd, &mh, &n, NULL, NULL) != 0) {
+            int e = WSAGetLastError();
+            /* A datagram that did not fit; QUIC cannot use half a packet. */
+            if (e == WSAEMSGSIZE) continue;
+            if (e == WSAEWOULDBLOCK) break;
+            set_errno_wsa();
+            return kept > 0 ? kept : -1;
+        }
+        if (mh.dwFlags & MSG_TRUNC) continue;
+        av_udp_msg *m = &msgs[kept];
+        store_addr(&m->peer, (struct sockaddr *)&from, mh.namelen);
+        read_cmsgs(&mh, m);
+        m->len = (uint32_t)n;
+        kept++;
+    }
+    return kept;
+}
+
+/* Windows 11's UDP segmentation offload is a later optimisation: until then
+ * every datagram is its own send, which the caller already handles. */
+int av_udp_gso_supported(av_sock fd) { (void)fd; return 0; }
+
+long av_udp_send(av_sock fd, const void *buf, size_t len,
+                 const av_udp_addr *peer, const av_udp_addr *local,
+                 uint8_t ecn) {
+    return av_udp_send_segments(fd, buf, len, 0, peer, local, ecn);
+}
+
+long av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
+                          const av_udp_addr *peer, const av_udp_addr *local,
+                          uint8_t ecn) {
+    (void)segment;
+    if (!peer || peer->len == 0) { errno = EINVAL; return -1; }
+    WSABUF data;
+    data.buf = (CHAR *)buf;
+    data.len = (ULONG)len;
+    char control[AV_CMSG_ROOM];
+    memset(control, 0, sizeof control);
+    WSAMSG mh;
+    memset(&mh, 0, sizeof mh);
+    mh.name = (LPSOCKADDR)peer->sa;
+    mh.namelen = (INT)peer->len;
+    mh.lpBuffers = &data;
+    mh.dwBufferCount = 1;
+    mh.Control.buf = control;
+    mh.Control.len = sizeof control;
+
+    size_t used = 0;
+    WSACMSGHDR *cm = WSA_CMSG_FIRSTHDR(&mh);
+    /* Reply from the address the client reached us on. */
+    if (local && local->len > 0 && cm) {
+        const struct sockaddr *sa = (const struct sockaddr *)local->sa;
+        if (sa->sa_family == AF_INET) {
+            cm->cmsg_level = IPPROTO_IP;
+            cm->cmsg_type = IP_PKTINFO;
+            cm->cmsg_len = WSA_CMSG_LEN(sizeof(IN_PKTINFO));
+            IN_PKTINFO pi;
+            memset(&pi, 0, sizeof pi);
+            pi.ipi_addr = ((const struct sockaddr_in *)sa)->sin_addr;
+            memcpy(WSA_CMSG_DATA(cm), &pi, sizeof pi);
+            used += WSA_CMSG_SPACE(sizeof(IN_PKTINFO));
+        } else if (sa->sa_family == AF_INET6) {
+            cm->cmsg_level = IPPROTO_IPV6;
+            cm->cmsg_type = IPV6_PKTINFO;
+            cm->cmsg_len = WSA_CMSG_LEN(sizeof(IN6_PKTINFO));
+            IN6_PKTINFO pi;
+            memset(&pi, 0, sizeof pi);
+            pi.ipi6_addr = ((const struct sockaddr_in6 *)sa)->sin6_addr;
+            memcpy(WSA_CMSG_DATA(cm), &pi, sizeof pi);
+            used += WSA_CMSG_SPACE(sizeof(IN6_PKTINFO));
+        }
+    }
+#if defined(IP_ECN) && defined(IPV6_ECN)
+    if (ecn) {
+        WSACMSGHDR *next = (WSACMSGHDR *)(control + used);
+        const struct sockaddr *sa = (const struct sockaddr *)peer->sa;
+        int v6 = sa->sa_family == AF_INET6;
+        next->cmsg_level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
+        next->cmsg_type = v6 ? IPV6_ECN : IP_ECN;
+        next->cmsg_len = WSA_CMSG_LEN(sizeof(INT));
+        INT v = ecn & 0x03;
+        memcpy(WSA_CMSG_DATA(next), &v, sizeof v);
+        used += WSA_CMSG_SPACE(sizeof(INT));
+    }
+#else
+    (void)ecn;
+#endif
+    mh.Control.len = (ULONG)used;
+    if (used == 0) mh.Control.buf = NULL;
+
+    DWORD sent = 0;
+    if (WSASendMsg(fd, &mh, 0, &sent, NULL, NULL) != 0) {
+        set_errno_wsa();
+        return -1;
+    }
+    return (long)sent;
+}
+
+#endif /* _WIN32 */
