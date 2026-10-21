@@ -67,9 +67,22 @@ if that matters to you.
 ## Requirements
 
 - Swift 6.1 or newer, in Swift 6 language mode.
-- Linux, or macOS 14 or newer.
+- Linux, macOS 14 or newer, or Windows 10 or newer on x86-64.
 - OpenSSL 3 and zlib development files. BoringSSL ships here and needs
   nothing installed. brotli and zstd are loaded at run time when present.
+
+On Windows, zlib is vendored and built with the package. Install Swift 6.1 or
+newer with the Visual Studio C++ build tools it asks for, and OpenSSL for
+Windows (the full x64 package from slproweb.com, not "Light"), then build from
+a shell that has run `vcvars64.bat`, with OpenSSL's `include` on `INCLUDE`
+and its `lib\VC\x64\MD` on `LIB`:
+
+```powershell
+$o = "C:\Program Files\OpenSSL-Win64"
+$env:INCLUDE = "$o\include;$env:INCLUDE"; $env:LIB = "$o\lib\VC\x64\MD;$env:LIB"
+$env:PATH = "$o\bin;$env:PATH"
+swift build
+```
 
 On macOS with Homebrew's OpenSSL:
 

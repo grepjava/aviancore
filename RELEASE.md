@@ -10,6 +10,63 @@ tagging, run the unit and end-to-end suites of Garuda and Peregrine against
 the new version as well: what they exercise here is only what this package
 tests of itself.
 
+## 0.8.0 — 2026-10-21
+
+**Windows.** aviancore builds and passes its tests natively on Windows 10 and
+later (x86-64, Swift 6.3, MSVC, OpenSSL 3 or 4), and Peregrine serves on it.
+The API changes it needs are why this is 0.8.0, not 0.7.4; on Linux and
+macOS nothing a caller compiles against changes type.
+
+- **A socket is `av_sock` (`AvianSocket` in Swift) and a poller is
+  `av_poll_t` (`AvianPollHandle`).** Both are `int` on POSIX, so Swift still
+  sees `Int32` there. On Windows a socket is a `SOCKET`, which is unsigned and
+  pointer-sized: test it with `isSocket(s)` (C: `av_sock_ok`) and use
+  `noSocket` (C: `av_bad_sock`, `AV_BAD_SOCK`) where `-1` was, because
+  `fd >= 0` is always true there and still compiles.
+- **Files are not sockets.** Use `av_read_file` and `av_close_file` for a
+  descriptor from `av_static_open` and the like; `av_read` and `av_close` are
+  socket calls on Windows. `av_write_stdout` and `av_write_stderr` write the
+  standard streams, which `av_write(1 or 2, ...)` cannot on Windows; `Log`
+  uses them.
+- **Functions that returned or took `long` take `ssize_t`**: `av_tls_read`,
+  `av_tls_write`, `av_tls_sendfile`, `av_udp_send`, `av_udp_send_segments`,
+  `av_read_stamped`, `av_send_fd`, `av_recv_fd`, `av_cache_init`,
+  `av_raise_nofile_limit` and the `av_aead_*`, `av_kex_*` and `av_certkey_*`
+  calls. `long` is 32 bits on Windows; Swift sees `Int` on every platform now.
+- **Worker processes without fork: `av_spawn_self`.** It starts this program
+  again with this command line, handing the copy a list of sockets and every
+  region `av_shm_map` has made, and keeps a control socket to it: `av_kill`
+  with any signal but 0 and 9 writes the number there, which the child reads
+  from `av_signal_pipe_init`, and `av_waitpid(-1, ...)` reaps these children.
+  A job object ends them with the parent. In the child, `av_spawned` gives
+  the role it was started with, `av_spawned_sockets` the sockets (in
+  non-blocking mode, which Winsock does not carry across), and `av_shm_map`
+  maps the inherited regions in order; `av_shm_attached` says a region was
+  inherited, and the cache, rate-limit, load and metrics tables keep their
+  contents and seeds when it was. POSIX keeps forking; there `av_spawn_self`
+  fails with `ENOSYS`.
+- **The Windows backends.** wepoll 1.5.8 is the poller (vendored, epoll's
+  API over AFD, level-triggered); pipes are loopback socket pairs because it
+  watches sockets only; console control events are the signals (Ctrl-C is
+  SIGINT, the rest SIGTERM); static files are opened, then checked to resolve
+  inside the root, which is what `openat2` guarantees on Linux; `--reload`
+  watches with ReadDirectoryChangesW; UDP carries PKTINFO and ECN through
+  WSARecvMsg and WSASendMsg; zlib 1.3.2 is vendored as CAvianZlib, built on
+  Windows only.
+- New portable helpers: `av_sleep_ms`, `av_dir_open`/`av_dir_next`/
+  `av_dir_close`, `av_shm_map`/`av_shm_unmap` (used by every shared table),
+  `av_process_alive`, `av_yield`, `av_entropy64`. `Poller` exposes its event
+  array (`eventBuffer`, `eventCapacity`) for a caller that waits on another
+  thread.
+- The cache table's seed lives in its header and the rate limiter's in an
+  entry in front of its table, so a process that maps them later hashes
+  alike. Neither layout is visible to callers.
+- Not on Windows yet: UDP segmentation offload (datagrams are sent one at a
+  time), `TransmitFile` (static files are read and sent), BoringSSL's
+  assembly (SwiftPM cannot build its NASM sources, so TLS there is the
+  portable C, as in swift-nio-ssl), and `av_execv`, `av_fork*` and descriptor
+  passing, which fail with `ENOSYS`.
+
 ## 0.7.3 — 2026-10-10
 
 - **`LoopExecutor` can time its jobs.** Set `slowJobMicros` and a drain
