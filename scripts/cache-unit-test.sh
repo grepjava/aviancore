@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The shared response cache's own tests, compiled against avian_cache.c:
+# The shared response cache's own tests, compiled against avian_cache.c
+# and the system layer it maps its table with:
 # a writer paused mid-copy, one that died holding a slot, copies of a response
 # in two size classes, and a change to a target while a GET for it is out.
 #
@@ -10,8 +11,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
-${CC:-cc} -std=c11 -O1 -g -Wall -Wextra -Werror -DAV_CACHE_TESTING \
+${CC:-cc} -std=gnu11 -O1 -g -Wall -Wextra -Werror -DAV_CACHE_TESTING \
     -I "$ROOT/Sources/CAvian/include" \
-    "$ROOT/Sources/CAvian/avian_cache.c" "$ROOT/scripts/cache_unit.c" \
+    "$ROOT/Sources/CAvian/avian_cache.c" "$ROOT/Sources/CAvian/avian_sys.c" \
+    "$ROOT/scripts/cache_unit.c" \
     -o "$OUT/cache-unit"
 "$OUT/cache-unit"

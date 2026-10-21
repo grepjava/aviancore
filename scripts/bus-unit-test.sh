@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The broadcast bus across real processes, compiled against avian_bus.c:
+# The broadcast bus across real processes, compiled against avian_bus.c
+# and the system layer it maps its ring with:
 # writers racing while a reader checks every byte, writers killed part-way
 # through a message, and wakes from one process to another.
 #
@@ -10,8 +11,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
-${CC:-cc} -std=c11 -O1 -g -Wall -Wextra -Werror \
+${CC:-cc} -std=gnu11 -O1 -g -Wall -Wextra -Werror \
     -I "$ROOT/Sources/CAvian/include" \
-    "$ROOT/Sources/CAvian/avian_bus.c" "$ROOT/scripts/bus_unit.c" \
+    "$ROOT/Sources/CAvian/avian_bus.c" "$ROOT/Sources/CAvian/avian_sys.c" \
+    "$ROOT/scripts/bus_unit.c" \
     -o "$OUT/bus-unit"
 "$OUT/bus-unit"
