@@ -58,6 +58,7 @@ void (*av_cache_test_after_claim)(void) = NULL;
 struct av_cache_table {
     _Atomic uint64_t generation;
     _Atomic uint64_t sequence;
+    uint64_t seed;              /* written once, before any worker exists */
 };
 
 struct av_cache_slot {
@@ -225,8 +226,15 @@ long av_cache_init(uint64_t total_bytes, uint32_t max_head, uint32_t max_body) {
 #endif
 
     g_table = (struct av_cache_table *)p;
-    atomic_store(&g_table->generation, 1);
-    atomic_store(&g_table->sequence, 1);
+    if (av_shm_attached(p)) {
+        /* A worker process that inherited the table: it is live, and every
+         * worker has to hash with the seed it was filled with. */
+        seed = g_table->seed;
+    } else {
+        g_table->seed = seed;
+        atomic_store(&g_table->generation, 1);
+        atomic_store(&g_table->sequence, 1);
+    }
     uint8_t *at = (uint8_t *)p + sizeof(struct av_cache_table);
     g_marks = (_Atomic uint64_t *)at;
     g_mark_mask = marks - 1;

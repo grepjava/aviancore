@@ -40,7 +40,8 @@ int av_metrics_init(int slots) {
     size_t bytes = g_stride * (size_t)slots;
     void *p = av_shm_map(bytes);
     if (!p) return -1;
-    memset(p, 0, bytes);
+    /* A worker process that inherited the page finds it live. */
+    if (!av_shm_attached(p)) memset(p, 0, bytes);
     g_page = (unsigned char *)p;
     g_slots = slots;
     return 0;

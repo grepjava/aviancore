@@ -15,9 +15,10 @@
  *   - Sockets are created non-inheritable, which is close-on-exec here.
  *   - Signals are console control events. A handler writes the matching signal
  *     number into the signal socket, the same byte a POSIX handler writes.
- *   - There is no fork. The calls that start, signal and hand descriptors to
- *     worker processes fail with ENOSYS until the multi-process model has its
- *     Windows form; one process with worker threads runs without them.
+ *   - There is no fork. A worker process is a new copy of the program
+ *     (av_spawn_self) that inherits the sockets and shared regions it is
+ *     handed and hears its signals over a control socket. fork, exec and
+ *     passing a descriptor over a socket fail with ENOSYS.
  */
 
 #if defined(_WIN32)
@@ -748,6 +749,109 @@ long av_read_stamped(av_sock fd, void *buf, size_t n, uint64_t *arrived_us) {
     return (long)av_read(fd, buf, n);
 }
 
+/* ------------------------------------------------------------------------ */
+/* What a process av_spawn_self started was given                           */
+/* ------------------------------------------------------------------------ */
+
+/* The parent describes the child's inheritance in one environment variable:
+ *
+ *   AVIAN_SPAWN=1;<parent pid>;<control socket>;<role>;<s1>,<s2>,...;<h1>:<bytes1>,...
+ *
+ * Handle values are the same in the child, because inherited handles keep
+ * theirs. The variable is removed once read, so that nothing this process
+ * starts sees it; a process that finds it anyway, carried in a copied
+ * environment, is told apart by the parent pid, which is not its parent. */
+
+#include <tlhelp32.h>
+
+#define AV_SPAWN_MAX_SOCKS 64
+#define AV_SHM_MAX 32
+
+static struct {
+    int spawned;
+    av_sock control;
+    char role[64];
+    av_sock socks[AV_SPAWN_MAX_SOCKS];
+    int sock_count;
+    HANDLE shm[AV_SHM_MAX];
+    size_t shm_bytes[AV_SHM_MAX];
+    int shm_count;
+    int shm_next;
+} g_spawn;
+static INIT_ONCE g_spawn_once = INIT_ONCE_STATIC_INIT;
+
+static DWORD parent_pid(void) {
+    DWORD self = GetCurrentProcessId(), parent = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W e;
+    e.dwSize = sizeof e;
+    for (BOOL ok = Process32FirstW(snap, &e); ok; ok = Process32NextW(snap, &e)) {
+        if (e.th32ProcessID == self) { parent = e.th32ParentProcessID; break; }
+    }
+    CloseHandle(snap);
+    return parent;
+}
+
+static BOOL CALLBACK spawn_load(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once; (void)param; (void)ctx;
+    g_spawn.control = AV_BAD_SOCK;
+    char buf[4096];
+    DWORD n = GetEnvironmentVariableA("AVIAN_SPAWN", buf, sizeof buf);
+    if (n == 0 || n >= sizeof buf) return TRUE;
+    SetEnvironmentVariableA("AVIAN_SPAWN", NULL);
+
+    char *save = NULL;
+    char *version = strtok_s(buf, ";", &save);
+    char *ppid = strtok_s(NULL, ";", &save);
+    char *control = strtok_s(NULL, ";", &save);
+    char *role = strtok_s(NULL, ";", &save);
+    char *socks = strtok_s(NULL, ";", &save);
+    char *shm = strtok_s(NULL, ";", &save);
+    if (!version || strcmp(version, "1") != 0 || !ppid || !control || !role) return TRUE;
+    if ((DWORD)strtoul(ppid, NULL, 10) != parent_pid()) return TRUE;
+
+    g_spawn.control = (av_sock)_strtoui64(control, NULL, 10);
+    strncpy_s(g_spawn.role, sizeof g_spawn.role, role, _TRUNCATE);
+    if (socks && strcmp(socks, "-") != 0) {
+        char *s2 = NULL;
+        for (char *t = strtok_s(socks, ",", &s2); t && g_spawn.sock_count < AV_SPAWN_MAX_SOCKS;
+             t = strtok_s(NULL, ",", &s2)) {
+            g_spawn.socks[g_spawn.sock_count++] = (av_sock)_strtoui64(t, NULL, 10);
+        }
+    }
+    if (shm && strcmp(shm, "-") != 0) {
+        char *s3 = NULL;
+        for (char *t = strtok_s(shm, ",", &s3); t && g_spawn.shm_count < AV_SHM_MAX;
+             t = strtok_s(NULL, ",", &s3)) {
+            char *colon = strchr(t, ':');
+            if (!colon) continue;
+            *colon = 0;
+            g_spawn.shm[g_spawn.shm_count] = (HANDLE)(uintptr_t)_strtoui64(t, NULL, 10);
+            g_spawn.shm_bytes[g_spawn.shm_count] = (size_t)_strtoui64(colon + 1, NULL, 10);
+            g_spawn.shm_count++;
+        }
+    }
+    g_spawn.spawned = 1;
+    return TRUE;
+}
+
+static void spawn_info(void) { InitOnceExecuteOnce(&g_spawn_once, spawn_load, NULL, NULL); }
+
+int av_spawned(char *role, size_t cap) {
+    spawn_info();
+    if (!g_spawn.spawned) return 0;
+    if (role && cap > 0) strncpy_s(role, cap, g_spawn.role, _TRUNCATE);
+    return 1;
+}
+
+int av_spawned_sockets(av_sock *out, int cap) {
+    spawn_info();
+    int n = g_spawn.sock_count < cap ? g_spawn.sock_count : cap;
+    for (int i = 0; i < n; i++) out[i] = g_spawn.socks[i];
+    return n;
+}
+
 /* ======================================================================== */
 /* Signals: console control events                                          */
 /* ======================================================================== */
@@ -764,7 +868,25 @@ static BOOL WINAPI console_event(DWORD type) {
     return TRUE;
 }
 
+/* A spawned worker shares its parent's console, so it sees the same events.
+ * It leaves them to the parent, which passes each on over the control socket
+ * as a signal, as a POSIX supervisor passes on the ones it receives -- acting
+ * on them here as well would stop the worker twice. When the console closes,
+ * returning would end the process at once, so the handler waits instead, and
+ * the worker drains until the parent's SIGTERM ends it or the system's
+ * deadline does. */
+static BOOL WINAPI child_console_event(DWORD type) {
+    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT) return TRUE;
+    Sleep(INFINITE);
+    return TRUE;
+}
+
 av_sock av_signal_pipe_init(void) {
+    spawn_info();
+    if (g_spawn.spawned && g_spawn.control != AV_BAD_SOCK) {
+        SetConsoleCtrlHandler(child_console_event, TRUE);
+        return g_spawn.control;
+    }
     if (g_sigpipe[0] != AV_BAD_SOCK) return g_sigpipe[0];
     if (loopback_pair(g_sigpipe) != 0) return AV_BAD_SOCK;
     SetConsoleCtrlHandler(console_event, TRUE);
@@ -782,9 +904,8 @@ void av_ignore_sigpipe(void) {}   /* a send to a closed peer is an error here, n
 /* Processes                                                                */
 /* ======================================================================== */
 
-/* Starting, signalling and handing descriptors to worker processes waits for
- * the Windows form of the multi-process model, which starts workers with
- * CreateProcess rather than fork. Until then they say so. */
+/* There is no fork: workers are new copies of the program (av_spawn_self),
+ * and these say so. */
 pid_t av_fork_worker(void) { errno = ENOSYS; return -1; }
 pid_t av_fork(void) { errno = ENOSYS; return -1; }
 int av_execv(const char *path, char *const argv[]) { (void)path; (void)argv; errno = ENOSYS; return -1; }
@@ -796,35 +917,327 @@ long av_recv_fd(av_sock chan, av_sock *fd, void *meta, size_t cap) {
     (void)chan; (void)meta; (void)cap; *fd = AV_BAD_SOCK; errno = ENOSYS; return -1;
 }
 
+/* Every region av_shm_map made or inherited, so that av_spawn_self can hand
+ * them on and av_shm_attached can answer. A server makes a handful, all at
+ * start-up. */
+static struct { HANDLE h; void *p; size_t bytes; int attached; } g_shm[AV_SHM_MAX];
+static SRWLOCK g_shm_lock = SRWLOCK_INIT;
+
+/* The children av_spawn_self started and has not yet reaped. */
+struct child { pid_t pid; HANDLE process; av_sock control; };
+static struct child *g_children;
+static int g_child_count, g_child_cap;
+static SRWLOCK g_children_lock = SRWLOCK_INIT;
+/* Kills every child when the last handle to it closes, which is when this
+ * process ends however it ends: a worker never outlives its supervisor. */
+static HANDLE g_job;
+
+static int find_child(pid_t pid) {
+    for (int i = 0; i < g_child_count; i++) if (g_children[i].pid == pid) return i;
+    return -1;
+}
+
+static void drop_child(int i) {
+    CloseHandle(g_children[i].process);
+    if (g_children[i].control != AV_BAD_SOCK) closesocket(g_children[i].control);
+    g_children[i] = g_children[--g_child_count];
+}
+
+static int set_inherit(HANDLE h, int on) {
+    return SetHandleInformation(h, HANDLE_FLAG_INHERIT, on ? HANDLE_FLAG_INHERIT : 0) ? 0 : -1;
+}
+
+static void add_handle(HANDLE *list, int *n, HANDLE h) {
+    if (!h || h == INVALID_HANDLE_VALUE) return;
+    for (int i = 0; i < *n; i++) if (list[i] == h) return;
+    list[(*n)++] = h;
+}
+
+pid_t av_spawn_self(const char *role, const av_sock *socks, int count) {
+    if (!role || strchr(role, ';') || strlen(role) >= sizeof g_spawn.role ||
+        count < 0 || count > AV_SPAWN_MAX_SOCKS) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!g_job) {
+        g_job = CreateJobObjectW(NULL, NULL);
+        if (!g_job) return win32_fail();
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+        memset(&limits, 0, sizeof limits);
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(g_job, JobObjectExtendedLimitInformation, &limits, sizeof limits);
+    }
+
+    av_sock control[2];
+    if (loopback_pair(control) != 0) return -1;
+
+    /* Three standard handles, the control socket, the sockets and the
+     * regions. Only these are inherited, whatever else is inheritable. */
+    HANDLE list[3 + 1 + AV_SPAWN_MAX_SOCKS + AV_SHM_MAX];
+    int n = 0;
+    HANDLE std[3] = { NULL, NULL, NULL };
+    DWORD which[3] = { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE };
+    for (int i = 0; i < 3; i++) {
+        HANDLE h = GetStdHandle(which[i]);
+        if (!h || h == INVALID_HANDLE_VALUE) continue;
+        if (DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &std[i], 0, TRUE,
+                            DUPLICATE_SAME_ACCESS)) {
+            add_handle(list, &n, std[i]);
+        }
+    }
+    set_inherit((HANDLE)control[0], 1);
+    add_handle(list, &n, (HANDLE)control[0]);
+    for (int i = 0; i < count; i++) {
+        set_inherit((HANDLE)socks[i], 1);
+        add_handle(list, &n, (HANDLE)socks[i]);
+    }
+
+    char env[4096];
+    int len = snprintf(env, sizeof env, "1;%lu;%llu;%s;", (unsigned long)GetCurrentProcessId(),
+                       (unsigned long long)control[0], role);
+    for (int i = 0; i < count && len < (int)sizeof env; i++) {
+        len += snprintf(env + len, sizeof env - (size_t)len, "%s%llu", i ? "," : "",
+                        (unsigned long long)socks[i]);
+    }
+    if (count == 0 && len < (int)sizeof env) len += snprintf(env + len, sizeof env - (size_t)len, "-");
+    if (len < (int)sizeof env) len += snprintf(env + len, sizeof env - (size_t)len, ";");
+    int regions = 0;
+    AcquireSRWLockShared(&g_shm_lock);
+    for (int i = 0; i < AV_SHM_MAX && len < (int)sizeof env; i++) {
+        if (!g_shm[i].h) continue;
+        len += snprintf(env + len, sizeof env - (size_t)len, "%s%llu:%llu", regions ? "," : "",
+                        (unsigned long long)(uintptr_t)g_shm[i].h,
+                        (unsigned long long)g_shm[i].bytes);
+        add_handle(list, &n, g_shm[i].h);
+        regions++;
+    }
+    ReleaseSRWLockShared(&g_shm_lock);
+    if (regions == 0 && len < (int)sizeof env) len += snprintf(env + len, sizeof env - (size_t)len, "-");
+
+    pid_t pid = -1;
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof pi);
+    LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
+    wchar_t *cmd = NULL;
+    wchar_t exe[32768];
+
+    if (len >= (int)sizeof env) { errno = E2BIG; goto done; }
+    if (GetModuleFileNameW(NULL, exe, (DWORD)(sizeof exe / sizeof exe[0])) == 0) { win32_fail(); goto done; }
+    cmd = _wcsdup(GetCommandLineW());   /* CreateProcessW may write to it */
+    if (!cmd) { errno = ENOMEM; goto done; }
+
+    SIZE_T size = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &size);
+    attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(size);
+    if (!attrs || !InitializeProcThreadAttributeList(attrs, 1, 0, &size)) {
+        free(attrs);
+        attrs = NULL;
+        errno = ENOMEM;
+        goto done;
+    }
+    if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, list,
+                                   (SIZE_T)n * sizeof(HANDLE), NULL, NULL)) {
+        win32_fail();
+        goto done;
+    }
+
+    STARTUPINFOEXW si;
+    memset(&si, 0, sizeof si);
+    si.StartupInfo.cb = sizeof si;
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = std[0];
+    si.StartupInfo.hStdOutput = std[1];
+    si.StartupInfo.hStdError = std[2];
+    si.lpAttributeList = attrs;
+
+    /* The child reads its inheritance from the environment it starts with,
+     * which is this process's at the moment of creation. */
+    static SRWLOCK env_lock = SRWLOCK_INIT;
+    AcquireSRWLockExclusive(&env_lock);
+    SetEnvironmentVariableA("AVIAN_SPAWN", env);
+    BOOL ok = CreateProcessW(exe, cmd, NULL, NULL, TRUE,
+                             EXTENDED_STARTUPINFO_PRESENT | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED,
+                             NULL, NULL, &si.StartupInfo, &pi);
+    SetEnvironmentVariableA("AVIAN_SPAWN", NULL);
+    ReleaseSRWLockExclusive(&env_lock);
+    if (!ok) { win32_fail(); goto done; }
+
+    AssignProcessToJobObject(g_job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+
+    AcquireSRWLockExclusive(&g_children_lock);
+    if (g_child_count == g_child_cap) {
+        int cap = g_child_cap ? g_child_cap * 2 : 16;
+        struct child *grown = (struct child *)realloc(g_children, (size_t)cap * sizeof *grown);
+        if (grown) { g_children = grown; g_child_cap = cap; }
+    }
+    if (g_child_count < g_child_cap) {
+        g_children[g_child_count].pid = (pid_t)pi.dwProcessId;
+        g_children[g_child_count].process = pi.hProcess;
+        g_children[g_child_count].control = control[1];
+        g_child_count++;
+        control[1] = AV_BAD_SOCK;   /* the registry owns it now */
+        pid = (pid_t)pi.dwProcessId;
+    } else {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hProcess);
+        errno = ENOMEM;
+    }
+    ReleaseSRWLockExclusive(&g_children_lock);
+
+done:
+    if (attrs) { DeleteProcThreadAttributeList(attrs); free(attrs); }
+    free(cmd);
+    for (int i = 0; i < 3; i++) if (std[i]) CloseHandle(std[i]);
+    /* Back to non-inheritable, so that nothing started later -- by this
+     * thread or the application's -- picks them up. */
+    for (int i = 0; i < count; i++) set_inherit((HANDLE)socks[i], 0);
+    closesocket(control[0]);
+    if (control[1] != AV_BAD_SOCK) closesocket(control[1]);
+    return pid;
+}
+
 /* The status as POSIX encodes a normal exit, (code << 8), so a caller's
  * WIFEXITED / WEXITSTATUS reading of it holds. */
+static int exit_status(HANDLE h) {
+    DWORD code = 0;
+    GetExitCodeProcess(h, &code);
+    return (int)((code & 0xff) << 8);
+}
+
 pid_t av_waitpid(pid_t pid, int *status, int nohang) {
+    if (pid == -1) {
+        for (;;) {
+            HANDLE waits[MAXIMUM_WAIT_OBJECTS];
+            int k = 0;
+            AcquireSRWLockExclusive(&g_children_lock);
+            if (g_child_count == 0) {
+                ReleaseSRWLockExclusive(&g_children_lock);
+                errno = ECHILD;
+                return -1;
+            }
+            for (int i = 0; i < g_child_count; i++) {
+                if (WaitForSingleObject(g_children[i].process, 0) == WAIT_OBJECT_0) {
+                    pid_t done = g_children[i].pid;
+                    if (status) *status = exit_status(g_children[i].process);
+                    drop_child(i);
+                    ReleaseSRWLockExclusive(&g_children_lock);
+                    return done;
+                }
+                if (k < MAXIMUM_WAIT_OBJECTS) waits[k++] = g_children[i].process;
+            }
+            ReleaseSRWLockExclusive(&g_children_lock);
+            if (nohang) return 0;
+            /* Any of them exiting is the wake; the scan above then finds it. */
+            WaitForMultipleObjects((DWORD)k, waits, FALSE, 1000);
+        }
+    }
+
+    AcquireSRWLockExclusive(&g_children_lock);
+    int i = find_child(pid);
+    if (i >= 0) {
+        HANDLE h = g_children[i].process;
+        ReleaseSRWLockExclusive(&g_children_lock);
+        if (WaitForSingleObject(h, nohang ? 0 : INFINITE) == WAIT_TIMEOUT) return 0;
+        AcquireSRWLockExclusive(&g_children_lock);
+        i = find_child(pid);
+        if (i >= 0) {
+            if (status) *status = exit_status(g_children[i].process);
+            drop_child(i);
+        }
+        ReleaseSRWLockExclusive(&g_children_lock);
+        return pid;
+    }
+    ReleaseSRWLockExclusive(&g_children_lock);
+
     HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
     if (!h) { errno = ECHILD; return -1; }
     DWORD w = WaitForSingleObject(h, nohang ? 0 : INFINITE);
     if (w == WAIT_TIMEOUT) { CloseHandle(h); return 0; }
-    DWORD code = 0;
-    GetExitCodeProcess(h, &code);
+    if (status) *status = exit_status(h);
     CloseHandle(h);
-    if (status) *status = (int)((code & 0xff) << 8);
     return pid;
 }
 
-/* Signal 0 asks whether the process exists, and SIGKILL ends it; the rest
- * travel over each worker's control socket once the multi-process model has
- * one. */
+/* Signal 0 asks whether the process exists and SIGKILL ends it. A child
+ * av_spawn_self started is sent any other signal as its number over the
+ * control socket; anything else can only be asked those two. */
 int av_kill(pid_t pid, int sig) {
+    AcquireSRWLockShared(&g_children_lock);
+    int i = find_child(pid);
+    if (i >= 0 && sig != 0 && sig != SIGKILL) {
+        unsigned char b = (unsigned char)sig;
+        int sent = send(g_children[i].control, (const char *)&b, 1, 0);
+        ReleaseSRWLockShared(&g_children_lock);
+        return sent == 1 ? 0 : wsa_fail();
+    }
+    ReleaseSRWLockShared(&g_children_lock);
+
     HANDLE h = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
     if (!h) { errno = ESRCH; return -1; }
     int rc = 0;
-    if (sig == 9) {
+    if (sig == SIGKILL) {
         if (!TerminateProcess(h, 137)) rc = win32_fail();
     } else if (sig != 0) {
         errno = ENOSYS;
         rc = -1;
+    } else if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) {
+        errno = ESRCH;   /* exited, not yet reaped */
+        rc = -1;
     }
     CloseHandle(h);
     return rc;
+}
+
+void av_sleep_ms(unsigned ms) { Sleep(ms); }
+
+/* ------------------------------------------------------------------------ */
+/* Directory listing                                                        */
+/* ------------------------------------------------------------------------ */
+
+struct av_dir {
+    HANDLE find;
+    int first;          /* the entry FindFirstFileW returned is still unread */
+    WIN32_FIND_DATAW data;
+    char name[MAX_PATH * 3];
+};
+
+av_dir *av_dir_open(const char *path) {
+    size_t n = strlen(path);
+    char *pattern = (char *)malloc(n + 3);
+    if (!pattern) { errno = ENOMEM; return NULL; }
+    memcpy(pattern, path, n);
+    memcpy(pattern + n, "\\*", 3);
+    wchar_t *w = wide(pattern);
+    free(pattern);
+    if (!w) return NULL;
+    av_dir *dir = (av_dir *)malloc(sizeof *dir);
+    if (!dir) { free(w); errno = ENOMEM; return NULL; }
+    dir->find = FindFirstFileExW(w, FindExInfoBasic, &dir->data, FindExSearchNameMatch, NULL,
+                                 FIND_FIRST_EX_LARGE_FETCH);
+    free(w);
+    if (dir->find == INVALID_HANDLE_VALUE) { win32_fail(); free(dir); return NULL; }
+    dir->first = 1;
+    return dir;
+}
+
+const char *av_dir_next(av_dir *dir) {
+    for (;;) {
+        if (!dir->first && !FindNextFileW(dir->find, &dir->data)) return NULL;
+        dir->first = 0;
+        if (WideCharToMultiByte(CP_UTF8, 0, dir->data.cFileName, -1, dir->name,
+                                (int)sizeof dir->name, NULL, NULL) > 0) {
+            return dir->name;
+        }
+        /* A name that does not fit is skipped rather than returned cut. */
+    }
+}
+
+void av_dir_close(av_dir *dir) {
+    if (!dir) return;
+    FindClose(dir->find);
+    free(dir);
 }
 
 pid_t av_getpid(void) { return (pid_t)GetCurrentProcessId(); }
@@ -1050,13 +1463,31 @@ int av_random_bytes(void *out, size_t n) {
 /* Shared memory and small process helpers                                  */
 /* ======================================================================== */
 
-/* Every region made, so that the multi-process model can hand a worker
- * process the handles to map. A server makes a handful, all at start-up. */
-#define AV_SHM_MAX 32
-static struct { HANDLE h; void *p; size_t bytes; } g_shm[AV_SHM_MAX];
-static SRWLOCK g_shm_lock = SRWLOCK_INIT;
+static void *shm_record(HANDLE h, void *p, size_t bytes, int attached) {
+    AcquireSRWLockExclusive(&g_shm_lock);
+    for (int i = 0; i < AV_SHM_MAX; i++) {
+        if (!g_shm[i].h) {
+            g_shm[i].h = h;
+            g_shm[i].p = p;
+            g_shm[i].bytes = bytes;
+            g_shm[i].attached = attached;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_shm_lock);
+    return p;
+}
 
 void *av_shm_map(size_t bytes) {
+    /* A spawned worker maps what its parent made, in the order the parent
+     * made it, since both run the same start-up. */
+    spawn_info();
+    if (g_spawn.shm_next < g_spawn.shm_count && g_spawn.shm_bytes[g_spawn.shm_next] == bytes) {
+        HANDLE h = g_spawn.shm[g_spawn.shm_next++];
+        void *p = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, bytes);
+        if (!p) { win32_fail(); return NULL; }
+        return shm_record(h, p, bytes, 1);
+    }
     /* Inheritable, so a worker started with handle inheritance gets it. */
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE,
@@ -1065,12 +1496,17 @@ void *av_shm_map(size_t bytes) {
     void *p = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, bytes);
     if (!p) { win32_fail(); CloseHandle(h); return NULL; }
     /* The paging file's pages start zeroed, as MAP_ANONYMOUS's do. */
-    AcquireSRWLockExclusive(&g_shm_lock);
+    return shm_record(h, p, bytes, 0);
+}
+
+int av_shm_attached(const void *p) {
+    int attached = 0;
+    AcquireSRWLockShared(&g_shm_lock);
     for (int i = 0; i < AV_SHM_MAX; i++) {
-        if (!g_shm[i].h) { g_shm[i].h = h; g_shm[i].p = p; g_shm[i].bytes = bytes; break; }
+        if (g_shm[i].h && g_shm[i].p == p) { attached = g_shm[i].attached; break; }
     }
-    ReleaseSRWLockExclusive(&g_shm_lock);
-    return p;
+    ReleaseSRWLockShared(&g_shm_lock);
+    return attached;
 }
 
 void av_shm_unmap(void *p, size_t bytes) {

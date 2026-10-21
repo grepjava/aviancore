@@ -1075,4 +1075,47 @@ uint64_t av_entropy64(void) {
     return (uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)getpid();
 }
 
+/* Workers are forked here, inheriting everything; see avian_sys.h. */
+pid_t av_spawn_self(const char *role, const av_sock *socks, int count) {
+    (void)role; (void)socks; (void)count;
+    errno = ENOSYS;
+    return -1;
+}
+int av_spawned(char *role, size_t cap) { (void)role; (void)cap; return 0; }
+int av_spawned_sockets(av_sock *out, int cap) { (void)out; (void)cap; return 0; }
+int av_shm_attached(const void *p) { (void)p; return 0; }
+
+void av_sleep_ms(unsigned ms) {
+    struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+}
+
+/* ------------------------------------------------------------------------ */
+/* Directory listing                                                        */
+/* ------------------------------------------------------------------------ */
+
+#include <dirent.h>
+
+struct av_dir { DIR *d; };
+
+av_dir *av_dir_open(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) return NULL;
+    av_dir *dir = (av_dir *)malloc(sizeof *dir);
+    if (!dir) { closedir(d); errno = ENOMEM; return NULL; }
+    dir->d = d;
+    return dir;
+}
+
+const char *av_dir_next(av_dir *dir) {
+    struct dirent *e = readdir(dir->d);
+    return e ? e->d_name : NULL;
+}
+
+void av_dir_close(av_dir *dir) {
+    if (!dir) return;
+    closedir(dir->d);
+    free(dir);
+}
+
 #endif /* !_WIN32 */

@@ -39,6 +39,23 @@ struct iovec {
     size_t iov_len;
 };
 
+/* The signals the server passes around by number. The CRT defines SIGINT and
+ * SIGTERM only; these are POSIX's values, carried over a worker's control
+ * socket (see av_spawn_self) rather than raised. */
+#  ifndef SIGHUP
+#    define SIGHUP 1
+#  endif
+#  ifndef SIGQUIT
+#    define SIGQUIT 3
+#  endif
+#  ifndef SIGKILL
+#    define SIGKILL 9
+#  endif
+/* access()'s mode, which io.h takes but does not name. */
+#  ifndef R_OK
+#    define R_OK 4
+#  endif
+
 #else
 
 #  include <sys/types.h>

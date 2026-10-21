@@ -63,9 +63,12 @@ int av_ratelimit_init(uint64_t emission_us, uint64_t tolerance_us, int log2_entr
     if (log2_entries < 8) log2_entries = 8;
     if (log2_entries > 24) log2_entries = 24;
     size_t count = (size_t)1 << log2_entries;
-    void *p = av_shm_map(count * sizeof(struct av_rl_entry));
+    /* One entry more than the table, in front of it, whose key holds the
+     * seed: worker processes that inherit the table have to hash alike. */
+    void *p = av_shm_map((count + 1) * sizeof(struct av_rl_entry));
     if (!p) return -1;
-    memset(p, 0, count * sizeof(struct av_rl_entry));
+    struct av_rl_entry *header = (struct av_rl_entry *)p;
+    int attached = av_shm_attached(p);
 
     uint64_t seed = 0;
 #if defined(__linux__)
@@ -85,11 +88,16 @@ int av_ratelimit_init(uint64_t emission_us, uint64_t tolerance_us, int log2_entr
 #endif
     }
 
+    if (attached) {
+        seed = atomic_load(&header->key);
+    } else {
+        atomic_store(&header->key, seed);
+    }
     g_seed = seed;
     g_mask = count - 1;
     g_emission = emission_us;
     g_tolerance = tolerance_us;
-    g_table = (struct av_rl_entry *)p;
+    g_table = header + 1;
     return 0;
 }
 

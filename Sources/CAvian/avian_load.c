@@ -38,7 +38,8 @@ int av_load_init(int slots) {
     size_t bytes = sizeof(load_slot) * (size_t)slots;
     void *p = av_shm_map(bytes);
     if (!p) return -1;
-    memset(p, 0, bytes);
+    /* A worker process that inherited the page finds it live. */
+    if (!av_shm_attached(p)) memset(p, 0, bytes);
     g_slots = (load_slot *)p;
     g_count = slots;
     return 0;

@@ -296,6 +296,43 @@ void av_unblock_piped_signals(void);
 int av_random_bytes(void *out, size_t n);
 
 /* ---------------------------------------------------------------------------
+ * Worker processes without fork (Windows)
+ *
+ * Windows starts a worker as a new copy of the program rather than a fork of
+ * the supervisor. av_spawn_self runs this executable again with this command
+ * line, handing it `socks` and every region av_shm_map has made, and keeps a
+ * control socket to it: av_kill on a pid it returned writes the signal number
+ * there, which the child reads from av_signal_pipe_init exactly as a POSIX
+ * worker reads its own signals. av_waitpid(-1, ...) reaps these children.
+ * Children are tied to the parent: they end if it does.
+ *
+ * In the child, av_spawned reports the `role` the parent gave (a short string
+ * without ';'), av_spawned_sockets the sockets, and av_shm_map, called in
+ * the order the parent called it, maps the inherited regions instead of making
+ * new ones (av_shm_attached says which).
+ *
+ * POSIX forks instead: av_spawn_self fails with ENOSYS, av_spawned and
+ * av_spawned_sockets return 0, and av_shm_attached is always 0.
+ * ------------------------------------------------------------------------- */
+pid_t av_spawn_self(const char *role, const av_sock *socks, int count);
+int av_spawned(char *role, size_t cap);
+int av_spawned_sockets(av_sock *out, int cap);
+/* 1 when `p`, which av_shm_map returned, was inherited from the parent, so its
+ * contents are live and must not be initialised again. */
+int av_shm_attached(const void *p);
+
+/* Sleeps the calling thread. */
+void av_sleep_ms(unsigned ms);
+
+/* Lists a directory's entries, "." and ".." included, in no order. The name
+ * stays valid until the next av_dir_next or av_dir_close. NULL when the
+ * directory cannot be opened, or at the end. */
+typedef struct av_dir av_dir;
+av_dir *av_dir_open(const char *path);
+const char *av_dir_next(av_dir *dir);
+void av_dir_close(av_dir *dir);
+
+/* ---------------------------------------------------------------------------
  * Memory every worker process shares
  *
  * The cache, the rate limiter, the load and metrics tables and the broadcast
