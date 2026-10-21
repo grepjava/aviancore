@@ -71,11 +71,11 @@ int av_hkdf_expand(int a, const void *p, size_t pl, const void *i, size_t il,
 int av_aead_key_len(int alg) { (void)alg; return -1; }
 av_aead *av_aead_new(int alg, const unsigned char *key) { (void)alg; (void)key; return NULL; }
 void av_aead_free(av_aead *a) { (void)a; }
-long av_aead_seal(av_aead *a, const unsigned char n[12], const void *ad, size_t adl,
+ssize_t av_aead_seal(av_aead *a, const unsigned char n[12], const void *ad, size_t adl,
                   const void *p, size_t pl, unsigned char *o) {
     (void)a; (void)n; (void)ad; (void)adl; (void)p; (void)pl; (void)o; return -1;
 }
-long av_aead_open(av_aead *a, const unsigned char n[12], const void *ad, size_t adl,
+ssize_t av_aead_open(av_aead *a, const unsigned char n[12], const void *ad, size_t adl,
                   const void *c, size_t cl, unsigned char *o) {
     (void)a; (void)n; (void)ad; (void)adl; (void)c; (void)cl; (void)o; return -1;
 }
@@ -86,8 +86,8 @@ int av_hp_mask(av_hp *h, const unsigned char s[16], unsigned char m[5]) {
 }
 av_kex *av_kex_new(int group) { (void)group; return NULL; }
 void av_kex_free(av_kex *k) { (void)k; }
-long av_kex_public(av_kex *k, unsigned char *o, size_t ol) { (void)k; (void)o; (void)ol; return -1; }
-long av_kex_derive(av_kex *k, const unsigned char *p, size_t pl,
+ssize_t av_kex_public(av_kex *k, unsigned char *o, size_t ol) { (void)k; (void)o; (void)ol; return -1; }
+ssize_t av_kex_derive(av_kex *k, const unsigned char *p, size_t pl,
                    unsigned char *o, size_t ol) {
     (void)k; (void)p; (void)pl; (void)o; (void)ol; return -1;
 }
@@ -98,13 +98,13 @@ av_certkey *av_certkey_load(const char *c, const char *k, char *err, size_t el) 
 }
 void av_certkey_free(av_certkey *ck) { (void)ck; }
 int av_certkey_chain_count(av_certkey *ck) { (void)ck; return 0; }
-long av_certkey_cert_der(av_certkey *ck, int i, unsigned char *o, size_t ol) {
+ssize_t av_certkey_cert_der(av_certkey *ck, int i, unsigned char *o, size_t ol) {
     (void)ck; (void)i; (void)o; (void)ol; return -1;
 }
 int av_certkey_schemes(av_certkey *ck, uint16_t *o, int m) {
     (void)ck; (void)o; (void)m; return 0;
 }
-long av_certkey_sign(av_certkey *ck, uint16_t s, const void *m, size_t ml,
+ssize_t av_certkey_sign(av_certkey *ck, uint16_t s, const void *m, size_t ml,
                      unsigned char *o, size_t ol) {
     (void)ck; (void)s; (void)m; (void)ml; (void)o; (void)ol; return -1;
 }
@@ -335,7 +335,7 @@ void av_aead_free(av_aead *a) {
     free(a);
 }
 
-long av_aead_seal(av_aead *a, const unsigned char nonce[12],
+ssize_t av_aead_seal(av_aead *a, const unsigned char nonce[12],
                   const void *aad, size_t aad_len,
                   const void *pt, size_t pt_len, unsigned char *out) {
     if (!a) return -1;
@@ -356,7 +356,7 @@ long av_aead_seal(av_aead *a, const unsigned char nonce[12],
     return (long)total + 16;
 }
 
-long av_aead_open(av_aead *a, const unsigned char nonce[12],
+ssize_t av_aead_open(av_aead *a, const unsigned char nonce[12],
                   const void *aad, size_t aad_len,
                   const void *ct, size_t ct_len, unsigned char *out) {
     if (!a || ct_len < 16) return -1;
@@ -483,7 +483,7 @@ void av_kex_free(av_kex *k) {
     free(k);
 }
 
-long av_kex_public(av_kex *k, unsigned char *out, size_t out_len) {
+ssize_t av_kex_public(av_kex *k, unsigned char *out, size_t out_len) {
     if (!k) return -1;
     if (k->group == AV_KEX_X25519) {
         size_t n = out_len;
@@ -509,7 +509,7 @@ long av_kex_public(av_kex *k, unsigned char *out, size_t out_len) {
 #endif
 }
 
-long av_kex_derive(av_kex *k, const unsigned char *peer, size_t peer_len,
+ssize_t av_kex_derive(av_kex *k, const unsigned char *peer, size_t peer_len,
                    unsigned char *out, size_t out_len) {
     if (!k) return -1;
     EVP_PKEY *pub = NULL;
@@ -683,7 +683,7 @@ int av_certkey_matches(av_certkey *ck, const char *host, size_t host_len) {
 
 int av_certkey_chain_count(av_certkey *ck) { return ck ? ck->count : 0; }
 
-long av_certkey_cert_der(av_certkey *ck, int index,
+ssize_t av_certkey_cert_der(av_certkey *ck, int index,
                          unsigned char *out, size_t out_len) {
     if (!ck || index < 0 || index >= ck->count) return -1;
     int n = i2d_X509(ck->chain[index], NULL);
@@ -722,7 +722,7 @@ int av_certkey_schemes(av_certkey *ck, uint16_t *out, int max) {
     return n;
 }
 
-long av_certkey_sign(av_certkey *ck, uint16_t scheme,
+ssize_t av_certkey_sign(av_certkey *ck, uint16_t scheme,
                      const void *msg, size_t msg_len,
                      unsigned char *out, size_t out_len) {
     if (!ck || !ck->key) return -1;

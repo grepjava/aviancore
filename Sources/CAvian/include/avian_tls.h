@@ -76,8 +76,8 @@ int av_tls_handshake(av_tls *tls, char *err, size_t err_len);
 
 /* read(2)/write(2) shaped. -1 with errno EAGAIN means "not yet"; errno EPIPE
  * means the session is over. A read of 0 is a clean close_notify. */
-long av_tls_read(av_tls *tls, void *buf, long n);
-long av_tls_write(av_tls *tls, const void *buf, long n);
+ssize_t av_tls_read(av_tls *tls, void *buf, ssize_t n);
+ssize_t av_tls_write(av_tls *tls, const void *buf, ssize_t n);
 
 /* --ktls: ask for kernel TLS on every context built after this call. Returns
  * 1 when this OpenSSL can do it at all, 0 when the request is ignored. */
@@ -112,7 +112,7 @@ int av_ktls_close_notify(av_sock fd);
 
 /* SSL_sendfile: `n` bytes of `fd` starting at `offset`, encrypted by the
  * kernel. Shaped like av_tls_write. Only when av_tls_ktls_send says 1. */
-long av_tls_sendfile(av_tls *tls, int fd, long offset, long n);
+ssize_t av_tls_sendfile(av_tls *tls, int fd, ssize_t offset, ssize_t n);
 
 /* Bytes OpenSSL is holding that the socket no longer has: how many are
  * decrypted and ready, or 1 when all it holds is read ahead and not yet

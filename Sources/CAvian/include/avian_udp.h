@@ -54,7 +54,7 @@ int av_udp_recv_batch(av_sock fd, void *buf, size_t stride,
 /* Sends one datagram from `local` (may be NULL, or unset, for the kernel's
  * choice). Returns bytes sent, or -1 with errno; EAGAIN means the send buffer
  * is full and the caller should wait for writability. */
-long av_udp_send(av_sock fd, const void *buf, size_t len,
+ssize_t av_udp_send(av_sock fd, const void *buf, size_t len,
                  const av_udp_addr *peer, const av_udp_addr *local,
                  uint8_t ecn);
 
@@ -62,7 +62,7 @@ long av_udp_send(av_sock fd, const void *buf, size_t len,
  * `segment` bytes each, back to back, the last allowed to be shorter. With
  * `segment` 0, or `len` no more than it, this is av_udp_send. The run is
  * accepted or refused whole. */
-long av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
+ssize_t av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
                           const av_udp_addr *peer, const av_udp_addr *local,
                           uint8_t ecn);
 

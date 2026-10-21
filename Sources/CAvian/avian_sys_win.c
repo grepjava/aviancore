@@ -744,7 +744,7 @@ int64_t av_unix_seconds(void) {
  * header's "a platform without it". */
 int av_set_rx_timestamps(av_sock fd) { (void)fd; errno = ENOSYS; return -1; }
 
-long av_read_stamped(av_sock fd, void *buf, size_t n, uint64_t *arrived_us) {
+ssize_t av_read_stamped(av_sock fd, void *buf, size_t n, uint64_t *arrived_us) {
     *arrived_us = 0;
     return (long)av_read(fd, buf, n);
 }
@@ -832,6 +832,12 @@ static BOOL CALLBACK spawn_load(PINIT_ONCE once, PVOID param, PVOID *ctx) {
             g_spawn.shm_count++;
         }
     }
+    /* Non-blocking mode is kept in each process's own Winsock state, not in
+     * the socket, so an inherited socket arrives blocking: one accept on a
+     * listener then waits for a connection instead of saying there is none. */
+    net_init();
+    av_set_nonblock(g_spawn.control);
+    for (int i = 0; i < g_spawn.sock_count; i++) av_set_nonblock(g_spawn.socks[i]);
     g_spawn.spawned = 1;
     return TRUE;
 }
@@ -910,10 +916,10 @@ pid_t av_fork_worker(void) { errno = ENOSYS; return -1; }
 pid_t av_fork(void) { errno = ENOSYS; return -1; }
 int av_execv(const char *path, char *const argv[]) { (void)path; (void)argv; errno = ENOSYS; return -1; }
 int av_handoff_pair(av_sock fds[2]) { (void)fds; errno = ENOSYS; return -1; }
-long av_send_fd(av_sock chan, av_sock fd, const void *meta, size_t meta_len) {
+ssize_t av_send_fd(av_sock chan, av_sock fd, const void *meta, size_t meta_len) {
     (void)chan; (void)fd; (void)meta; (void)meta_len; errno = ENOSYS; return -1;
 }
-long av_recv_fd(av_sock chan, av_sock *fd, void *meta, size_t cap) {
+ssize_t av_recv_fd(av_sock chan, av_sock *fd, void *meta, size_t cap) {
     (void)chan; (void)meta; (void)cap; *fd = AV_BAD_SOCK; errno = ENOSYS; return -1;
 }
 
@@ -1190,6 +1196,14 @@ int av_kill(pid_t pid, int sig) {
     return rc;
 }
 
+ssize_t av_write_stdout(const void *buf, size_t n) {
+    return (ssize_t)_write(1, buf, n > 0x7fffffffu ? 0x7fffffffu : (unsigned)n);
+}
+
+ssize_t av_write_stderr(const void *buf, size_t n) {
+    return (ssize_t)_write(2, buf, n > 0x7fffffffu ? 0x7fffffffu : (unsigned)n);
+}
+
 void av_sleep_ms(unsigned ms) { Sleep(ms); }
 
 /* ------------------------------------------------------------------------ */
@@ -1250,7 +1264,7 @@ int av_cpu_count(void) {
 
 /* Sockets are kernel handles with no per-process descriptor table to raise.
  * The CRT's table, which holds the static files, is raised to its ceiling. */
-long av_raise_nofile_limit(void) {
+ssize_t av_raise_nofile_limit(void) {
     int n = _setmaxstdio(8192);
     return n > 0 ? (long)n : 512;
 }

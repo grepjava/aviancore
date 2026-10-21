@@ -221,7 +221,7 @@ public enum Log {
             body(&line)
             line.buf[line.len] = cLF
             line.len &+= 1
-            _ = av_write(2, line.buf, line.len)
+            _ = av_write_stderr(line.buf, line.len)
         }
     }
 
@@ -239,7 +239,7 @@ public enum Log {
             body(&line)
             line.buf[line.len] = cLF
             line.len &+= 1
-            _ = av_write(2, line.buf, line.len)
+            _ = av_write_stderr(line.buf, line.len)
         }
     }
 
@@ -257,9 +257,9 @@ public enum Log {
 
     /// Writes an arbitrary blob (a traceback from an embedded runtime) straight through.
     public static func raw(_ p: UnsafePointer<UInt8>, _ n: Int) {
-        _ = av_write(2, p, n)
+        _ = av_write_stderr(p, n)
         var nl: UInt8 = cLF
-        _ = av_write(2, &nl, 1)
+        _ = av_write_stderr(&nl, 1)
     }
 }
 

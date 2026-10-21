@@ -20,6 +20,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "avian_platform.h"   /* ssize_t on Windows */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -88,12 +90,12 @@ av_aead *av_aead_new(int alg, const unsigned char *key);
 void av_aead_free(av_aead *a);
 
 /* `out` needs pt_len + 16 bytes. Returns bytes written, or -1. */
-long av_aead_seal(av_aead *a, const unsigned char nonce[12],
+ssize_t av_aead_seal(av_aead *a, const unsigned char nonce[12],
                   const void *aad, size_t aad_len,
                   const void *pt, size_t pt_len, unsigned char *out);
 /* Returns plaintext length, or -1 when the tag does not verify. `out` may
  * overlap `ct` only if it is the same address. */
-long av_aead_open(av_aead *a, const unsigned char nonce[12],
+ssize_t av_aead_open(av_aead *a, const unsigned char nonce[12],
                   const void *aad, size_t aad_len,
                   const void *ct, size_t ct_len, unsigned char *out);
 
@@ -121,9 +123,9 @@ av_kex *av_kex_new(int group);
 void av_kex_free(av_kex *k);
 /* Our public key in TLS wire form (32 bytes for X25519, 65 uncompressed for
  * P-256). Returns the length, or -1. */
-long av_kex_public(av_kex *k, unsigned char *out, size_t out_len);
+ssize_t av_kex_public(av_kex *k, unsigned char *out, size_t out_len);
 /* The shared secret. Returns its length, or -1 when the peer's key is bad. */
-long av_kex_derive(av_kex *k, const unsigned char *peer, size_t peer_len,
+ssize_t av_kex_derive(av_kex *k, const unsigned char *peer, size_t peer_len,
                    unsigned char *out, size_t out_len);
 
 /* --------------------------------------------------------------------------
@@ -148,14 +150,14 @@ void av_certkey_free(av_certkey *ck);
 /* Number of certificates in the chain, leaf first. */
 int av_certkey_chain_count(av_certkey *ck);
 /* DER of one certificate. With `out` NULL, returns the length needed. */
-long av_certkey_cert_der(av_certkey *ck, int index,
+ssize_t av_certkey_cert_der(av_certkey *ck, int index,
                          unsigned char *out, size_t out_len);
 /* Signature schemes this key can produce, in our order of preference. Returns
  * how many were written. */
 int av_certkey_schemes(av_certkey *ck, uint16_t *out, int max);
 /* Signs `msg` (the caller has already built the TLS 1.3 signature input).
  * Returns the signature length, or -1. */
-long av_certkey_sign(av_certkey *ck, uint16_t scheme,
+ssize_t av_certkey_sign(av_certkey *ck, uint16_t scheme,
                      const void *msg, size_t msg_len,
                      unsigned char *out, size_t out_len);
 

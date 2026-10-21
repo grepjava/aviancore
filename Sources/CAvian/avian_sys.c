@@ -385,7 +385,7 @@ int av_handoff_pair(int fds[2]) {
     return 0;
 }
 
-long av_send_fd(int chan, int fd, const void *meta, size_t meta_len) {
+ssize_t av_send_fd(int chan, int fd, const void *meta, size_t meta_len) {
     struct iovec iov;
     iov.iov_base = (void *)meta;
     iov.iov_len = meta_len;
@@ -414,7 +414,7 @@ long av_send_fd(int chan, int fd, const void *meta, size_t meta_len) {
     return (long)n;
 }
 
-long av_recv_fd(int chan, int *fd, void *meta, size_t cap) {
+ssize_t av_recv_fd(int chan, int *fd, void *meta, size_t cap) {
     *fd = -1;
     struct iovec iov;
     iov.iov_base = meta;
@@ -740,7 +740,7 @@ int av_set_rx_timestamps(int fd) {
 #endif
 }
 
-long av_read_stamped(int fd, void *buf, size_t n, uint64_t *arrived_us) {
+ssize_t av_read_stamped(int fd, void *buf, size_t n, uint64_t *arrived_us) {
     *arrived_us = 0;
     struct iovec iov = { .iov_base = buf, .iov_len = n };
     char control[64];
@@ -1031,7 +1031,7 @@ int64_t av_sched_slice(void) {
 }
 #endif
 
-long av_raise_nofile_limit(void) {
+ssize_t av_raise_nofile_limit(void) {
     struct rlimit rl;
     if (getrlimit(RLIMIT_NOFILE, &rl) != 0) return -1;
     if (rl.rlim_cur < rl.rlim_max) {
@@ -1084,6 +1084,18 @@ pid_t av_spawn_self(const char *role, const av_sock *socks, int count) {
 int av_spawned(char *role, size_t cap) { (void)role; (void)cap; return 0; }
 int av_spawned_sockets(av_sock *out, int cap) { (void)out; (void)cap; return 0; }
 int av_shm_attached(const void *p) { (void)p; return 0; }
+
+ssize_t av_write_stdout(const void *buf, size_t n) {
+    ssize_t r;
+    do { r = write(1, buf, n); } while (r < 0 && errno == EINTR);
+    return r;
+}
+
+ssize_t av_write_stderr(const void *buf, size_t n) {
+    ssize_t r;
+    do { r = write(2, buf, n); } while (r < 0 && errno == EINTR);
+    return r;
+}
 
 void av_sleep_ms(unsigned ms) {
     struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };

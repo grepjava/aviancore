@@ -161,7 +161,7 @@ static void raise_mark(uint64_t target_hash, uint64_t to) {
     while (current < to && !atomic_compare_exchange_weak(mark, &current, to)) {}
 }
 
-long av_cache_init(uint64_t total_bytes, uint32_t max_head, uint32_t max_body) {
+ssize_t av_cache_init(uint64_t total_bytes, uint32_t max_head, uint32_t max_body) {
     if (g_table) {
         long slots = 0;
         for (int i = 0; i < g_class_count; i++) slots += (long)(g_classes[i].mask + 1);

@@ -15,6 +15,14 @@ public typealias AvianSocket = av_sock
 /// Windows.
 public typealias AvianPollHandle = av_poll_t
 
+/// The value that stands for no socket: -1 on POSIX, `INVALID_SOCKET` on
+/// Windows. A `SOCKET` is unsigned, so `fd >= 0` there is always true; test
+/// with `isSocket` instead.
+@inlinable public var noSocket: AvianSocket { av_bad_sock }
+
+/// Whether `s` is a socket rather than `noSocket`.
+@inlinable public func isSocket(_ s: AvianSocket) -> Bool { av_sock_ok(s) != 0 }
+
 public struct PollMask: OptionSet, Sendable {
     public let rawValue: UInt32
     @inlinable public init(rawValue: UInt32) { self.rawValue = rawValue }
@@ -81,6 +89,13 @@ public struct Poller {
         let e = events[i]
         return (e.token, PollMask(rawValue: e.mask))
     }
+
+    /// The array `wait` fills and `event` reads, and its length, for a caller
+    /// that collects events on another thread and hands the count over --
+    /// asyncio's bridge on Windows, where the loop cannot watch the poller
+    /// itself. Only one thread may wait into it at a time.
+    public var eventBuffer: UnsafeMutablePointer<av_event> { events }
+    public var eventCapacity: Int32 { maxEvents }
 
     public func destroy() {
         events.deallocate()

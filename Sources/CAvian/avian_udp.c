@@ -298,13 +298,13 @@ int av_udp_gso_refused(int err) {
 
 #if !defined(_WIN32)
 
-long av_udp_send(av_sock fd, const void *buf, size_t len,
+ssize_t av_udp_send(av_sock fd, const void *buf, size_t len,
                  const av_udp_addr *peer, const av_udp_addr *local,
                  uint8_t ecn) {
     return av_udp_send_segments(fd, buf, len, 0, peer, local, ecn);
 }
 
-long av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
+ssize_t av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
                           const av_udp_addr *peer, const av_udp_addr *local,
                           uint8_t ecn) {
     if (!peer || peer->len == 0) { errno = EINVAL; return -1; }
@@ -641,13 +641,13 @@ int av_udp_recv_batch(av_sock fd, void *buf, size_t stride,
  * every datagram is its own send, which the caller already handles. */
 int av_udp_gso_supported(av_sock fd) { (void)fd; return 0; }
 
-long av_udp_send(av_sock fd, const void *buf, size_t len,
+ssize_t av_udp_send(av_sock fd, const void *buf, size_t len,
                  const av_udp_addr *peer, const av_udp_addr *local,
                  uint8_t ecn) {
     return av_udp_send_segments(fd, buf, len, 0, peer, local, ecn);
 }
 
-long av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
+ssize_t av_udp_send_segments(av_sock fd, const void *buf, size_t len, uint16_t segment,
                           const av_udp_addr *peer, const av_udp_addr *local,
                           uint8_t ecn) {
     (void)segment;

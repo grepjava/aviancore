@@ -77,10 +77,10 @@ av_sock av_accept(av_sock lfd, char *peer, size_t peer_len, uint16_t *peer_port)
 int av_handoff_pair(av_sock fds[2]);
 /* Sends `fd` with `meta`. Bytes sent, or -1 with errno (EAGAIN when the
  * receiver is behind). The caller still owns and must close its own copy. */
-long av_send_fd(av_sock chan, av_sock fd, const void *meta, size_t meta_len);
+ssize_t av_send_fd(av_sock chan, av_sock fd, const void *meta, size_t meta_len);
 /* Receives one message: its bytes into `meta`, the descriptor into `*fd`, which
  * is -1 when none came. Bytes received, or -1 with errno. */
-long av_recv_fd(av_sock chan, av_sock *fd, void *meta, size_t cap);
+ssize_t av_recv_fd(av_sock chan, av_sock *fd, void *meta, size_t cap);
 
 /* Starts a TCP connection and returns at once. The socket is non-blocking and
  * close-on-exec, so the caller waits for writability and then asks
@@ -205,7 +205,7 @@ int av_set_rx_timestamps(av_sock fd);
 /* read() through recvmsg, also reporting when the kernel received the last
  * of the bytes returned, as wall-clock microseconds. `*arrived_us` is 0 when
  * the kernel recorded nothing (no timestamping, or a platform without it). */
-long av_read_stamped(av_sock fd, void *buf, size_t n, uint64_t *arrived_us);
+ssize_t av_read_stamped(av_sock fd, void *buf, size_t n, uint64_t *arrived_us);
 /* IMF-fixdate, e.g. "Sun, 06 Nov 1994 08:49:37 GMT". Writes exactly 29 bytes,
  * no NUL. Returns 29. Hand-rolled: strftime() would pull in locale state. */
 int av_http_date(char *buf29, int64_t unix_seconds);
@@ -232,7 +232,7 @@ int  av_kill(pid_t pid, int sig);
 pid_t av_getpid(void);
 int  av_cpu_count(void);
 /* Raise RLIMIT_NOFILE to its hard limit; returns the resulting soft limit. */
-long av_raise_nofile_limit(void);
+ssize_t av_raise_nofile_limit(void);
 
 /* Asks the scheduler to run the calling thread in slices of `slice_ns`
  * nanoseconds rather than its default (EEVDF's custom slice, Linux 6.12 and
@@ -320,6 +320,11 @@ int av_spawned_sockets(av_sock *out, int cap);
 /* 1 when `p`, which av_shm_map returned, was inherited from the parent, so its
  * contents are live and must not be initialised again. */
 int av_shm_attached(const void *p);
+
+/* Writes to standard output or standard error, which are not sockets on
+ * Windows and so cannot go through av_write. One write, as av_write is. */
+ssize_t av_write_stdout(const void *buf, size_t n);
+ssize_t av_write_stderr(const void *buf, size_t n);
 
 /* Sleeps the calling thread. */
 void av_sleep_ms(unsigned ms);

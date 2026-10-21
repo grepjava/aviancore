@@ -85,10 +85,10 @@ void av_tls_free(av_tls *tls) { (void)tls; }
 int av_tls_handshake(av_tls *tls, char *err, size_t err_len) {
     (void)tls; (void)err; (void)err_len; return -2;
 }
-long av_tls_read(av_tls *tls, void *buf, long n) {
+ssize_t av_tls_read(av_tls *tls, void *buf, ssize_t n) {
     (void)tls; (void)buf; (void)n; errno = EPIPE; return -1;
 }
-long av_tls_write(av_tls *tls, const void *buf, long n) {
+ssize_t av_tls_write(av_tls *tls, const void *buf, ssize_t n) {
     (void)tls; (void)buf; (void)n; errno = EPIPE; return -1;
 }
 int av_tls_enable_ktls(int on) { (void)on; return 0; }
@@ -96,7 +96,7 @@ int av_tls_kernel_ready(void) { return 0; }
 int av_tls_ktls_send(av_tls *tls) { (void)tls; return 0; }
 int av_tls_ktls_recv(av_tls *tls) { (void)tls; return 0; }
 int av_tls_release_to_kernel(av_tls *tls) { (void)tls; return 0; }
-long av_tls_sendfile(av_tls *tls, int fd, long offset, long n) {
+ssize_t av_tls_sendfile(av_tls *tls, int fd, ssize_t offset, ssize_t n) {
     (void)tls; (void)fd; (void)offset; (void)n; errno = EPIPE; return -1;
 }
 int av_tls_pending(av_tls *tls) { (void)tls; return 0; }
@@ -994,7 +994,7 @@ int av_tls_handshake(av_tls *tls, char *err, size_t err_len) {
     }
 }
 
-long av_tls_read(av_tls *tls, void *buf, long n) {
+ssize_t av_tls_read(av_tls *tls, void *buf, ssize_t n) {
     if (!tls || !tls->ssl) { errno = EPIPE; return -1; }
     if (n <= 0) return 0;
     int rc = SSL_read(tls->ssl, buf, (int)(n > 0x7fffffff ? 0x7fffffff : n));
@@ -1029,7 +1029,7 @@ long av_tls_read(av_tls *tls, void *buf, long n) {
     }
 }
 
-long av_tls_write(av_tls *tls, const void *buf, long n) {
+ssize_t av_tls_write(av_tls *tls, const void *buf, ssize_t n) {
     if (!tls || !tls->ssl) { errno = EPIPE; return -1; }
     if (n <= 0) return 0;
     int rc = SSL_write(tls->ssl, buf, (int)(n > 0x7fffffff ? 0x7fffffff : n));
@@ -1102,7 +1102,7 @@ int av_tls_release_to_kernel(av_tls *tls) {
 #endif
 }
 
-long av_tls_sendfile(av_tls *tls, int fd, long offset, long n) {
+ssize_t av_tls_sendfile(av_tls *tls, int fd, ssize_t offset, ssize_t n) {
 #if defined(SSL_OP_ENABLE_KTLS) && !defined(OPENSSL_NO_KTLS)
     if (!tls || !tls->ssl) { errno = EPIPE; return -1; }
     if (n <= 0) return 0;

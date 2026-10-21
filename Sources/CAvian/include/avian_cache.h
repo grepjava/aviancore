@@ -55,6 +55,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "avian_platform.h"   /* ssize_t on Windows */
+
 /* The longest key an entry can have. A request whose key is longer is simply
  * not cached. */
 #define AV_CACHE_MAX_KEY 2048
@@ -63,7 +65,7 @@
  * key, `max_head` bytes of headers and `max_body` bytes of body, plus a mark
  * table of a few percent of that. Call once, before any fork. Returns the
  * number of slots, or -1. */
-long av_cache_init(uint64_t total_bytes, uint32_t max_head, uint32_t max_body);
+ssize_t av_cache_init(uint64_t total_bytes, uint32_t max_head, uint32_t max_body);
 
 int av_cache_enabled(void);
 uint32_t av_cache_max_head(void);
